@@ -1,6 +1,6 @@
 import React from 'react';
 import { ActiveTab } from '../types';
-import { Disc3, Terminal, Sliders, CheckSquare, BookOpen, Layers } from 'lucide-react';
+import { Disc3, Terminal, Sliders, CheckSquare, BookOpen, Layers, ShieldCheck, Play, Film } from 'lucide-react';
 
 interface HeaderProps {
   activeTab: ActiveTab;
@@ -35,13 +35,37 @@ export const Header: React.FC<HeaderProps> = ({
               </span>
             </div>
             <p className="text-xs text-slate-400">
-              MakeMKV Track Matcher · DVD Deinterlacing Presets · PowerShell Pipelines
+              1-Click Digitize · Video Player Title Verifier · Automated Plex Pipeline
             </p>
           </div>
         </div>
 
         {/* Navigation Tabs */}
         <nav className="flex items-center gap-1 overflow-x-auto pb-1 md:pb-0 scrollbar-none">
+          <button
+            onClick={() => setActiveTab('automate')}
+            className={`flex items-center gap-2 px-3 py-1.5 text-xs font-medium rounded-lg transition-colors whitespace-nowrap ${
+              activeTab === 'automate'
+                ? 'bg-amber-500 text-slate-950 font-semibold shadow-sm'
+                : 'text-slate-300 hover:text-white hover:bg-slate-800'
+            }`}
+          >
+            <Play className="w-3.5 h-3.5 fill-current" />
+            1-Click Digitize
+          </button>
+
+          <button
+            onClick={() => setActiveTab('mapping')}
+            className={`flex items-center gap-2 px-3 py-1.5 text-xs font-medium rounded-lg transition-colors whitespace-nowrap ${
+              activeTab === 'mapping'
+                ? 'bg-amber-500 text-slate-950 font-semibold shadow-sm'
+                : 'text-slate-300 hover:text-white hover:bg-slate-800'
+            }`}
+          >
+            <Film className="w-4 h-4" />
+            Episode Mapping & Player
+          </button>
+
           <button
             onClick={() => setActiveTab('matcher')}
             className={`flex items-center gap-2 px-3 py-1.5 text-xs font-medium rounded-lg transition-colors whitespace-nowrap ${
@@ -51,7 +75,7 @@ export const Header: React.FC<HeaderProps> = ({
             }`}
           >
             <Layers className="w-4 h-4" />
-            Track & File Matcher
+            File Matcher
           </button>
 
           <button
@@ -88,6 +112,18 @@ export const Header: React.FC<HeaderProps> = ({
           >
             <CheckSquare className="w-4 h-4" />
             Box Set Progress ({percent}%)
+          </button>
+
+          <button
+            onClick={() => setActiveTab('setup')}
+            className={`flex items-center gap-2 px-3 py-1.5 text-xs font-medium rounded-lg transition-colors whitespace-nowrap ${
+              activeTab === 'setup'
+                ? 'bg-amber-500 text-slate-950 font-semibold shadow-sm'
+                : 'text-slate-300 hover:text-white hover:bg-slate-800'
+            }`}
+          >
+            <ShieldCheck className="w-4 h-4" />
+            Setup Doctor & Readme
           </button>
 
           <button

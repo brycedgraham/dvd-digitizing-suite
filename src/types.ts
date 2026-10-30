@@ -49,4 +49,40 @@ export interface PipelineSettings {
   createSeasonSubfolder: boolean;
 }
 
-export type ActiveTab = 'matcher' | 'presets' | 'scripts' | 'tracker' | 'guide';
+export type ActiveTab = 'automate' | 'mapping' | 'matcher' | 'presets' | 'scripts' | 'tracker' | 'setup' | 'guide';
+
+export interface SystemCheckItem {
+  id: string;
+  name: string;
+  category: 'tool' | 'hardware' | 'storage' | 'permission';
+  description: string;
+  checkCommand: string;
+  fixRecommendation: string;
+  status: 'passed' | 'warning' | 'failed' | 'pending';
+  detectedValue?: string;
+}
+
+export interface WorkerState {
+  status: 'idle' | 'scanning' | 'ripping' | 'awaiting_mapping' | 'transcoding' | 'completed' | 'error';
+  stage: number; // 0=idle, 1=scan, 2=rip, 3=map, 4=encode, 5=done
+  progress_percent: number;
+  current_file?: string;
+  current_episode?: string;
+  eta_seconds?: number;
+  speed_fps?: number;
+  logs: string[];
+  detected_tools: {
+    handbrake: string | null;
+    makemkv: string | null;
+    dvd_drives: string[];
+  };
+  ripped_tracks: Array<{
+    sourceFile: string;
+    filename: string;
+    durationEstimate: string;
+    durationMinutes: number;
+    fileSizeMb: number;
+    trackIndex: number;
+  }>;
+  error_message?: string | null;
+}
