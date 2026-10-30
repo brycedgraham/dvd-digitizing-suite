@@ -1,0 +1,6 @@
+{
+  "name": "NCIS DVD-to-Plex Automation Studio",
+  "description": "Digitize, deinterlace, transcode, and rename NCIS Seasons 1-8 DVD box sets for Plex with automated MakeMKV track matching and Windows PowerShell pipelines.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
