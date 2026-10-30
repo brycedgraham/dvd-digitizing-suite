@@ -18,8 +18,8 @@ from pathlib import Path
 from http.server import HTTPServer, BaseHTTPRequestHandler
 from urllib.parse import urlparse, parse_qs
 
-PORT = 5000
-HOST = "127.0.0.1"
+PORT = int(os.environ.get("PORT", "5000"))
+HOST = os.environ.get("HOST", "0.0.0.0")
 
 # Global pipeline state
 STATE = {
@@ -51,9 +51,13 @@ def add_log(message: str, level: str = "info"):
         if len(STATE["logs"]) > 200:
             STATE["logs"].pop(0)
 
-def detect_windows_dvd_drives():
-    """Detect optical CD/DVD drives on Windows."""
+def detect_optical_dvd_drives():
+    """Detect optical CD/DVD drives on Windows, Linux, and Docker."""
     drives = []
+    env_drive = os.environ.get("OPTICAL_DRIVE")
+    if env_drive:
+        drives.append(env_drive)
+
     if sys.platform == "win32":
         try:
             import ctypes
@@ -68,11 +72,19 @@ def detect_windows_dvd_drives():
                 bitmask >>= 1
         except Exception as e:
             add_log(f"Drive detection fallback: {e}", "warn")
-            drives = ["D:"]
+            if not drives:
+                drives = ["D:"]
     else:
-        # Linux / container fallback
-        drives = ["/dev/sr0", "/dev/cdrom"]
-    return drives or ["D:"]
+        # Linux / Docker container checks
+        linux_candidates = ["/dev/sr0", "/dev/sr1", "/dev/cdrom", "/dev/dvd"]
+        for dev in linux_candidates:
+            if os.path.exists(dev) and dev not in drives:
+                drives.append(dev)
+
+        if not drives:
+            drives = ["/dev/sr0"]
+
+    return drives
 
 def find_executable(name: str, standard_win_paths: list):
     """Locate CLI executable in PATH or standard Program Files locations."""
@@ -101,9 +113,9 @@ def refresh_detected_tools():
         r"C:\Program Files (x86)\MakeMKV\makemkv.exe"
     ]
 
-    hb_cli = find_executable("HandBrakeCLI.exe", hb_paths) or find_executable("HandBrakeCLI", [])
+    hb_cli = find_executable("HandBrakeCLI.exe", hb_paths) or find_executable("HandBrakeCLI", []) or find_executable("handbrake-cli", [])
     mkv_cli = find_executable("makemkvcon64.exe", mkv_paths) or find_executable("makemkvcon", [])
-    drives = detect_windows_dvd_drives()
+    drives = detect_optical_dvd_drives()
 
     with STATE_LOCK:
         STATE["detected_tools"]["handbrake"] = hb_cli
@@ -112,7 +124,7 @@ def refresh_detected_tools():
 
     add_log(f"Detected HandBrakeCLI: {hb_cli or 'NOT FOUND'}")
     add_log(f"Detected MakeMKV: {mkv_cli or 'NOT FOUND'}")
-    add_log(f"Detected DVD drives: {', '.join(drives)}")
+    add_log(f"Detected Optical DVD drives: {', '.join(drives)}")
 
 class NCISAutomationHandler(BaseHTTPRequestHandler):
     def send_cors_headers(self):
@@ -155,6 +167,34 @@ class NCISAutomationHandler(BaseHTTPRequestHandler):
 
             self.serve_video_range(file_param)
             return
+
+        # Static Frontend Serving for Docker Single-Container Mode
+        dist_dir = Path(__file__).resolve().parent.parent / "dist"
+        if dist_dir.is_dir():
+            target_file = dist_dir / (path.lstrip("/") or "index.html")
+            if not target_file.is_file():
+                target_file = dist_dir / "index.html"
+
+            if target_file.is_file():
+                ext = target_file.suffix.lower()
+                mimes = {
+                    ".html": "text/html",
+                    ".js": "application/javascript",
+                    ".css": "text/css",
+                    ".json": "application/json",
+                    ".svg": "image/svg+xml",
+                    ".png": "image/png",
+                    ".ico": "image/x-icon",
+                }
+                ctype = mimes.get(ext, "application/octet-stream")
+                data = target_file.read_bytes()
+                self.send_response(200)
+                self.send_cors_headers()
+                self.send_header("Content-Type", ctype)
+                self.send_header("Content-Length", str(len(data)))
+                self.end_headers()
+                self.wfile.write(data)
+                return
 
         # Default 404
         self.send_response(404)
@@ -340,12 +380,13 @@ class NCISAutomationHandler(BaseHTTPRequestHandler):
             return
 
         # Execute real MakeMKV CLI command
-        # Syntax: makemkvcon mkv disc:0 all <target_dir> --minlength=1200
+        # Syntax: makemkvcon mkv dev:/dev/sr0 all <target_dir> --minlength=900 (or disc:0)
+        disc_target = f"dev:{dvd_drive}" if dvd_drive.startswith("/dev/") else "disc:0"
         cmd = [
             makemkv_bin,
             "-r",
             "mkv",
-            f"disc:0",
+            disc_target,
             "all",
             str(target_dir),
             "--minlength=900"  # Filter out items under 15 mins (menu clips/intros)

@@ -66,10 +66,43 @@ P:\Plex Media\TV Shows\
 | Script | Purpose |
 | :--- | :--- |
 | `backend/server.py` | Local Python automation server (MakeMKV & HandBrake runner + video streamer). |
+| `Dockerfile` | Multi-stage Docker build for Linux, Unraid, TrueNAS, and Docker Desktop. |
+| `docker-compose.yml` | Container orchestration with optical drive pass-through and storage mounts. |
 | `Test-NCISSetup.ps1` | Interactive PC environment doctor: checks tools, drives, storage, and script permissions. |
 | `Encode-NCIS-SxxDyy.ps1` | Standalone batch PowerShell script if you prefer running without the Python server. |
 | `Rename-NCIS-SxxDyy.ps1` | Fast standalone renamer for files already transcoded via the HandBrake desktop GUI. |
 | `NCIS_DVD_Decomb.json` | Official HandBrake GUI preset file (import via *Presets → Options → Import from file*). |
+
+---
+
+## 🐳 Docker & Unraid Deployment
+
+You can run the entire studio inside a Docker container with optical drive pass-through:
+
+### 1. 1-Command Docker Run
+```bash
+docker run -d \
+  --name ncis-dvd-studio \
+  --restart unless-stopped \
+  --device=/dev/sr0:/dev/sr0 \
+  -p 5000:5000 \
+  -v $(pwd)/scratch:/scratch \
+  -v /path/to/plex/media:/plex \
+  ncis-dvd-to-plex-studio:latest
+```
+
+### 2. Using Docker Compose
+```bash
+# Build and start container
+docker compose up -d
+```
+Access the studio at `http://localhost:5000`.
+
+### 3. Optical Drive Permissions on Linux
+Ensure the user running Docker belongs to the `cdrom` group:
+```bash
+sudo usermod -aG cdrom $USER
+```
 
 ---
 

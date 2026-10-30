@@ -1,0 +1,32 @@
+version: '3.8'
+
+services:
+  ncis-dvd-studio:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    image: ncis-dvd-to-plex-studio:latest
+    container_name: ncis-dvd-studio
+    restart: unless-stopped
+    ports:
+      - "5000:5000"
+    environment:
+      - PORT=5000
+      - HOST=0.0.0.0
+      - OPTICAL_DRIVE=/dev/sr0
+      - SCRATCH_DIR=/scratch
+      - PLEX_DIR=/plex
+    # Optical disc drive pass-through for DVD reading & CSS decryption
+    devices:
+      - /dev/sr0:/dev/sr0
+      # Optional SCSI generic device (useful for certain USB external drives)
+      # - /dev/sg0:/dev/sg0
+    # Enable privileged mode if your Docker daemon requires it for optical drives
+    # privileged: true
+    volumes:
+      # Temporary scratch folder for raw MakeMKV disc rips
+      - ./scratch:/scratch
+      # Final Plex TV library destination
+      - ./plex:/plex
+      # Optional MakeMKV settings / persistent configuration
+      - ./config:/config

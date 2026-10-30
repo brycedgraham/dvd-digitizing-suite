@@ -30,10 +30,12 @@ export const EnvironmentSetupDoctor: React.FC<EnvironmentSetupDoctorProps> = ({
 }) => {
   const [copiedScript, setCopiedScript] = useState(false);
   const [copiedOneLiner, setCopiedOneLiner] = useState(false);
+  const [copiedDockerCompose, setCopiedDockerCompose] = useState(false);
+  const [copiedDockerRun, setCopiedDockerRun] = useState(false);
   const [dvdDriveLetter, setDvdDriveLetter] = useState('D:');
   const [scratchDriveLetter, setScratchDriveLetter] = useState('C:');
   const [plexDriveLetter, setPlexDriveLetter] = useState('P:');
-  const [activeSubTab, setActiveSubTab] = useState<'script' | 'checklist' | 'readme'>('script');
+  const [activeSubTab, setActiveSubTab] = useState<'script' | 'checklist' | 'docker' | 'readme'>('script');
 
   // Interactive checklist state
   const [checkItems, setCheckItems] = useState<SystemCheckItem[]>([
@@ -382,6 +384,16 @@ pause
               Diagnostic Checklist
             </button>
             <button
+              onClick={() => setActiveSubTab('docker')}
+              className={`px-3 py-1.5 text-xs font-medium rounded-md transition-colors ${
+                activeSubTab === 'docker'
+                  ? 'bg-amber-500 text-slate-950 font-bold'
+                  : 'text-slate-300 hover:text-white'
+              }`}
+            >
+              Docker & Unraid
+            </button>
+            <button
               onClick={() => setActiveSubTab('readme')}
               className={`px-3 py-1.5 text-xs font-medium rounded-md transition-colors ${
                 activeSubTab === 'readme'
@@ -567,7 +579,159 @@ pause
         </div>
       )}
 
-      {/* SubTab 3: Full Readme View */}
+      {/* SubTab: Docker & Container Deployment */}
+      {activeSubTab === 'docker' && (
+        <div className="bg-slate-900 border border-slate-800 rounded-xl p-5 space-y-5">
+          <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 pb-3 border-b border-slate-800">
+            <div>
+              <h4 className="text-sm font-bold text-white flex items-center gap-2">
+                <Cpu className="w-4 h-4 text-amber-400" />
+                Docker & Unraid Container Architecture
+              </h4>
+              <p className="text-xs text-slate-400">
+                Run the studio as a self-contained container with optical disc drive pass-through and Plex volume mounts.
+              </p>
+            </div>
+
+            <div className="flex items-center gap-2">
+              <button
+                onClick={() => {
+                  const composeYaml = `version: '3.8'\nservices:\n  ncis-dvd-studio:\n    image: ncis-dvd-to-plex-studio:latest\n    container_name: ncis-dvd-studio\n    restart: unless-stopped\n    ports:\n      - "5000:5000"\n    environment:\n      - OPTICAL_DRIVE=/dev/sr0\n      - SCRATCH_DIR=/scratch\n      - PLEX_DIR=/plex\n    devices:\n      - /dev/sr0:/dev/sr0\n    volumes:\n      - ./scratch:/scratch\n      - /mnt/user/data/media/TV Shows:/plex\n      - ./config:/config`;
+                  navigator.clipboard.writeText(composeYaml);
+                  setCopiedDockerCompose(true);
+                  setTimeout(() => setCopiedDockerCompose(false), 2000);
+                }}
+                className="flex items-center gap-1.5 px-3 py-1.5 text-xs font-medium bg-slate-800 hover:bg-slate-700 text-slate-200 border border-slate-700 rounded-lg transition-colors"
+              >
+                {copiedDockerCompose ? (
+                  <>
+                    <Check className="w-3.5 h-3.5 text-emerald-400" />
+                    <span className="text-emerald-400">Copied Compose YAML!</span>
+                  </>
+                ) : (
+                  <>
+                    <Copy className="w-3.5 h-3.5" />
+                    <span>Copy docker-compose.yml</span>
+                  </>
+                )}
+              </button>
+
+              <button
+                onClick={() => {
+                  const composeYaml = `version: '3.8'\nservices:\n  ncis-dvd-studio:\n    image: ncis-dvd-to-plex-studio:latest\n    container_name: ncis-dvd-studio\n    restart: unless-stopped\n    ports:\n      - "5000:5000"\n    environment:\n      - OPTICAL_DRIVE=/dev/sr0\n      - SCRATCH_DIR=/scratch\n      - PLEX_DIR=/plex\n    devices:\n      - /dev/sr0:/dev/sr0\n    volumes:\n      - ./scratch:/scratch\n      - /mnt/user/data/media/TV Shows:/plex\n      - ./config:/config\n`;
+                  const blob = new Blob([composeYaml], { type: 'text/yaml' });
+                  const url = URL.createObjectURL(blob);
+                  const a = document.createElement('a');
+                  a.href = url;
+                  a.download = 'docker-compose.yml';
+                  document.body.appendChild(a);
+                  a.click();
+                  document.body.removeChild(a);
+                  URL.revokeObjectURL(url);
+                }}
+                className="flex items-center gap-1.5 px-3.5 py-1.5 text-xs font-semibold bg-amber-500 hover:bg-amber-400 text-slate-950 rounded-lg transition-colors shadow-sm"
+              >
+                <Download className="w-3.5 h-3.5" />
+                <span>Download docker-compose.yml</span>
+              </button>
+            </div>
+          </div>
+
+          {/* Quick Start 1-Liner */}
+          <div className="bg-slate-950 border border-slate-800 rounded-lg p-3.5 space-y-2">
+            <span className="font-semibold text-xs text-white block">
+              1-Command Docker Run with Optical Drive Pass-Through:
+            </span>
+            <div className="flex items-center justify-between gap-2 bg-slate-900 p-2.5 rounded font-mono text-[11px] text-amber-300 border border-slate-800 overflow-x-auto">
+              <span>
+                docker run -d --name ncis-dvd-studio --device=/dev/sr0:/dev/sr0 -p 5000:5000 -v $(pwd)/scratch:/scratch -v /mnt/media/TV:/plex ncis-dvd-to-plex-studio
+              </span>
+              <button
+                onClick={() => {
+                  const cmd =
+                    'docker run -d --name ncis-dvd-studio --device=/dev/sr0:/dev/sr0 -p 5000:5000 -v $(pwd)/scratch:/scratch -v /mnt/media/TV:/plex ncis-dvd-to-plex-studio';
+                  navigator.clipboard.writeText(cmd);
+                  setCopiedDockerRun(true);
+                  setTimeout(() => setCopiedDockerRun(false), 2000);
+                }}
+                className="p-1 text-slate-400 hover:text-white shrink-0"
+                title="Copy docker run command"
+              >
+                {copiedDockerRun ? <Check className="w-3.5 h-3.5 text-emerald-400" /> : <Copy className="w-3.5 h-3.5" />}
+              </button>
+            </div>
+          </div>
+
+          {/* Platform Specific Pass-Through Guide */}
+          <div className="grid grid-cols-1 md:grid-cols-3 gap-3 text-xs">
+            <div className="p-3.5 bg-slate-950 border border-slate-800 rounded-lg space-y-1.5">
+              <span className="font-bold text-white block">Linux (Ubuntu / Debian)</span>
+              <p className="text-[11px] text-slate-400 leading-relaxed">
+                Optical drives are located at <code className="text-amber-300">/dev/sr0</code>. Ensure the user running Docker is in the <code className="text-slate-200">cdrom</code> group:
+              </p>
+              <div className="bg-slate-900 p-1.5 rounded font-mono text-[10px] text-slate-300 select-all">
+                sudo usermod -aG cdrom $USER
+              </div>
+            </div>
+
+            <div className="p-3.5 bg-slate-950 border border-slate-800 rounded-lg space-y-1.5">
+              <span className="font-bold text-white block">Unraid OS</span>
+              <p className="text-[11px] text-slate-400 leading-relaxed">
+                In the Unraid Docker container settings, turn on <strong>Advanced View</strong> and add under <strong>Extra Parameters</strong>:
+              </p>
+              <div className="bg-slate-900 p-1.5 rounded font-mono text-[10px] text-amber-300 select-all">
+                --device=/dev/sr0:/dev/sr0
+              </div>
+              <p className="text-[10px] text-slate-500">
+                Map your array share to <code className="text-slate-400">/plex</code>.
+              </p>
+            </div>
+
+            <div className="p-3.5 bg-slate-950 border border-slate-800 rounded-lg space-y-1.5">
+              <span className="font-bold text-white block">TrueNAS SCALE</span>
+              <p className="text-[11px] text-slate-400 leading-relaxed">
+                In Apps → Custom App, add a <strong>Host Device</strong> mapping for <code className="text-amber-300">/dev/sr0</code> and configure Host Path volume mounts for your ZFS media datasets.
+              </p>
+            </div>
+          </div>
+
+          {/* docker-compose.yml code viewer */}
+          <div className="space-y-1.5">
+            <span className="text-xs font-semibold text-slate-400 font-mono">
+              Complete docker-compose.yml:
+            </span>
+            <pre className="p-4 bg-slate-950 rounded-lg border border-slate-800 font-mono text-xs text-amber-200/90 overflow-x-auto leading-relaxed">
+{`version: '3.8'
+
+services:
+  ncis-dvd-studio:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    image: ncis-dvd-to-plex-studio:latest
+    container_name: ncis-dvd-studio
+    restart: unless-stopped
+    ports:
+      - "5000:5000"
+    environment:
+      - PORT=5000
+      - HOST=0.0.0.0
+      - OPTICAL_DRIVE=/dev/sr0
+      - SCRATCH_DIR=/scratch
+      - PLEX_DIR=/plex
+    # Pass through optical drive hardware
+    devices:
+      - /dev/sr0:/dev/sr0
+    volumes:
+      - ./scratch:/scratch
+      - /mnt/user/data/media/TV Shows:/plex
+      - ./config:/config`}
+            </pre>
+          </div>
+        </div>
+      )}
+
+      {/* SubTab: Full Readme View */}
       {activeSubTab === 'readme' && (
         <div className="bg-slate-900 border border-slate-800 rounded-xl p-5 space-y-5">
           <div className="flex items-center justify-between pb-3 border-b border-slate-800">
