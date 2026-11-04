@@ -16,10 +16,47 @@ import threading
 import subprocess
 from pathlib import Path
 from http.server import HTTPServer, BaseHTTPRequestHandler
+try:
+    from http.server import ThreadingHTTPServer as BaseHTTPServer
+except ImportError:
+    from socketserver import ThreadingMixIn
+    class BaseHTTPServer(ThreadingMixIn, HTTPServer):  # type: ignore
+        daemon_threads = True
+
 from urllib.parse import urlparse, parse_qs
 
 PORT = int(os.environ.get("PORT", "5000"))
 HOST = os.environ.get("HOST", "0.0.0.0")
+
+def is_client_disconnect(exc: Exception) -> bool:
+    """Detect if an exception is an expected client disconnect (browser closed tab, refreshed, aborted fetch)."""
+    if isinstance(exc, (ConnectionResetError, ConnectionAbortedError, BrokenPipeError)):
+        return True
+    if isinstance(exc, OSError):
+        # 10053: WSAECONNABORTED, 10054: WSAECONNRESET on Windows; 32: EPIPE, 104: ECONNRESET on POSIX
+        winerror = getattr(exc, "winerror", None)
+        errno = getattr(exc, "errno", None)
+        if winerror in (10053, 10054) or errno in (32, 104):
+            return True
+    return False
+
+class RobustThreadingHTTPServer(BaseHTTPServer):
+    """Multi-threaded HTTP server that cleanly handles concurrent requests and suppresses client abort stack traces."""
+    daemon_threads = True
+    allow_reuse_address = True
+
+    def handle_error(self, request, client_address):
+        """Suppress noisy tracebacks for expected client disconnects (tab closed, page reloaded, fetch aborted)."""
+        exc_type, exc_value, _ = sys.exc_info()
+        if exc_type is not None:
+            if issubclass(exc_type, (ConnectionResetError, ConnectionAbortedError, BrokenPipeError)):
+                return
+            if issubclass(exc_type, OSError):
+                winerror = getattr(exc_value, "winerror", None)
+                errno = getattr(exc_value, "errno", None)
+                if winerror in (10053, 10054) or errno in (32, 104):
+                    return
+        super().handle_error(request, client_address)
 
 # Global pipeline state
 STATE = {
@@ -127,6 +164,30 @@ def refresh_detected_tools():
     add_log(f"Detected Optical DVD drives: {', '.join(drives)}")
 
 class NCISAutomationHandler(BaseHTTPRequestHandler):
+    protocol_version = "HTTP/1.1"
+
+    def handle(self):
+        """Handle request while cleanly catching abrupt client disconnects (tab closed, reload)."""
+        try:
+            super().handle()
+        except Exception as e:
+            if is_client_disconnect(e):
+                self.close_connection = True
+            else:
+                raise
+
+    def safe_write(self, data: bytes) -> bool:
+        """Safely write binary data to client socket, gracefully ignoring socket abortions."""
+        try:
+            self.wfile.write(data)
+            self.wfile.flush()
+            return True
+        except Exception as e:
+            if is_client_disconnect(e):
+                self.close_connection = True
+                return False
+            raise
+
     def send_cors_headers(self):
         self.send_header("Access-Control-Allow-Origin", "*")
         self.send_header("Access-Control-Allow-Methods", "GET, POST, OPTIONS")
@@ -134,141 +195,165 @@ class NCISAutomationHandler(BaseHTTPRequestHandler):
         self.send_header("Access-Control-Expose-Headers", "Content-Range, Accept-Ranges, Content-Length")
 
     def do_OPTIONS(self):
-        self.send_response(200)
-        self.send_cors_headers()
-        self.end_headers()
-
-    def do_GET(self):
-        parsed = urlparse(self.path)
-        path = parsed.path
-        query = parse_qs(parsed.query)
-
-        # Health & System Status
-        if path == "/api/status":
-            with STATE_LOCK:
-                data = json.dumps(STATE).encode("utf-8")
+        try:
             self.send_response(200)
             self.send_cors_headers()
-            self.send_header("Content-Type", "application/json")
-            self.send_header("Content-Length", str(len(data)))
             self.end_headers()
-            self.wfile.write(data)
-            return
+        except Exception as e:
+            if is_client_disconnect(e):
+                self.close_connection = True
+            else:
+                raise
 
-        # Video Streaming with HTTP Byte-Range support
-        elif path == "/api/stream":
-            file_param = query.get("file", [""])[0]
-            if not file_param or not os.path.isfile(file_param):
-                self.send_response(404)
-                self.send_cors_headers()
-                self.end_headers()
-                self.wfile.write(b"File not found")
-                return
+    def do_GET(self):
+        try:
+            parsed = urlparse(self.path)
+            path = parsed.path
+            query = parse_qs(parsed.query)
 
-            self.serve_video_range(file_param)
-            return
-
-        # Static Frontend Serving for Docker Single-Container Mode
-        dist_dir = Path(__file__).resolve().parent.parent / "dist"
-        if dist_dir.is_dir():
-            target_file = dist_dir / (path.lstrip("/") or "index.html")
-            if not target_file.is_file():
-                target_file = dist_dir / "index.html"
-
-            if target_file.is_file():
-                ext = target_file.suffix.lower()
-                mimes = {
-                    ".html": "text/html",
-                    ".js": "application/javascript",
-                    ".css": "text/css",
-                    ".json": "application/json",
-                    ".svg": "image/svg+xml",
-                    ".png": "image/png",
-                    ".ico": "image/x-icon",
-                }
-                ctype = mimes.get(ext, "application/octet-stream")
-                data = target_file.read_bytes()
+            # Health & System Status
+            if path == "/api/status":
+                with STATE_LOCK:
+                    data = json.dumps(STATE).encode("utf-8")
                 self.send_response(200)
                 self.send_cors_headers()
-                self.send_header("Content-Type", ctype)
+                self.send_header("Content-Type", "application/json")
                 self.send_header("Content-Length", str(len(data)))
                 self.end_headers()
-                self.wfile.write(data)
+                self.safe_write(data)
                 return
 
-        # Default 404
-        self.send_response(404)
-        self.send_cors_headers()
-        self.end_headers()
-        self.wfile.write(b"Not Found")
+            # Video Streaming with HTTP Byte-Range support
+            elif path == "/api/stream":
+                file_param = query.get("file", [""])[0]
+                if not file_param or not os.path.isfile(file_param):
+                    self.send_response(404)
+                    self.send_cors_headers()
+                    self.end_headers()
+                    self.safe_write(b"File not found")
+                    return
+
+                self.serve_video_range(file_param)
+                return
+
+            # Static Frontend Serving for Docker Single-Container Mode
+            dist_dir = Path(__file__).resolve().parent.parent / "dist"
+            if dist_dir.is_dir():
+                target_file = dist_dir / (path.lstrip("/") or "index.html")
+                if not target_file.is_file():
+                    target_file = dist_dir / "index.html"
+
+                if target_file.is_file():
+                    ext = target_file.suffix.lower()
+                    mimes = {
+                        ".html": "text/html",
+                        ".js": "application/javascript",
+                        ".css": "text/css",
+                        ".json": "application/json",
+                        ".svg": "image/svg+xml",
+                        ".png": "image/png",
+                        ".ico": "image/x-icon",
+                    }
+                    ctype = mimes.get(ext, "application/octet-stream")
+                    data = target_file.read_bytes()
+                    self.send_response(200)
+                    self.send_cors_headers()
+                    self.send_header("Content-Type", ctype)
+                    self.send_header("Content-Length", str(len(data)))
+                    self.end_headers()
+                    self.safe_write(data)
+                    return
+
+            # Default 404
+            self.send_response(404)
+            self.send_cors_headers()
+            self.end_headers()
+            self.safe_write(b"Not Found")
+        except Exception as e:
+            if is_client_disconnect(e):
+                self.close_connection = True
+            else:
+                raise
 
     def do_POST(self):
-        parsed = urlparse(self.path)
-        path = parsed.path
-        content_length = int(self.headers.get("Content-Length", 0))
-        post_body = self.rfile.read(content_length)
-        payload = {}
-        if post_body:
-            try:
-                payload = json.loads(post_body.decode("utf-8"))
-            except Exception:
-                pass
+        try:
+            parsed = urlparse(self.path)
+            path = parsed.path
+            content_length = int(self.headers.get("Content-Length", 0))
+            post_body = self.rfile.read(content_length) if content_length > 0 else b""
+            payload = {}
+            if post_body:
+                try:
+                    payload = json.loads(post_body.decode("utf-8"))
+                except Exception:
+                    pass
 
-        if path == "/api/rip":
-            # Start MakeMKV ripping task in background
-            dvd_drive = payload.get("dvd_drive", "D:")
-            scratch_dir = payload.get("scratch_dir", r"C:\MakeMKV_Rips\NCIS")
-            season = payload.get("season", 1)
-            disc = payload.get("disc", 1)
+            if path == "/api/rip":
+                # Start MakeMKV ripping task in background
+                dvd_drive = payload.get("dvd_drive", "D:")
+                scratch_dir = payload.get("scratch_dir", r"C:\MakeMKV_Rips\NCIS")
+                season = payload.get("season", 1)
+                disc = payload.get("disc", 1)
 
-            threading.Thread(
-                target=self.run_makemkv_rip,
-                args=(dvd_drive, scratch_dir, season, disc),
-                daemon=True
-            ).start()
+                threading.Thread(
+                    target=self.run_makemkv_rip,
+                    args=(dvd_drive, scratch_dir, season, disc),
+                    daemon=True
+                ).start()
 
-            self.send_json_response({"status": "started", "message": "MakeMKV rip started in background."})
-            return
+                self.send_json_response({"status": "started", "message": "MakeMKV rip started in background."})
+                return
 
-        elif path == "/api/transcode":
-            # Start HandBrakeCLI batch transcode
-            tracks = payload.get("tracks", [])
-            plex_dir = payload.get("plex_dir", r"P:\Plex Media\TV Shows")
-            season = payload.get("season", 1)
-            rf_quality = payload.get("rf_quality", 19)
-            codec = payload.get("codec", "x264")
+            elif path == "/api/transcode":
+                # Start HandBrakeCLI batch transcode
+                tracks = payload.get("tracks", [])
+                plex_dir = payload.get("plex_dir", r"P:\Plex Media\TV Shows")
+                season = payload.get("season", 1)
+                rf_quality = payload.get("rf_quality", 19)
+                codec = payload.get("codec", "x264")
 
-            threading.Thread(
-                target=self.run_handbrake_transcode,
-                args=(tracks, plex_dir, season, rf_quality, codec),
-                daemon=True
-            ).start()
+                threading.Thread(
+                    target=self.run_handbrake_transcode,
+                    args=(tracks, plex_dir, season, rf_quality, codec),
+                    daemon=True
+                ).start()
 
-            self.send_json_response({"status": "started", "message": "HandBrake transcode started in background."})
-            return
+                self.send_json_response({"status": "started", "message": "HandBrake transcode started in background."})
+                return
 
-        elif path == "/api/reset":
-            with STATE_LOCK:
-                STATE["status"] = "idle"
-                STATE["stage"] = 0
-                STATE["progress_percent"] = 0.0
-                STATE["error_message"] = None
-                STATE["ripped_tracks"] = []
-            self.send_json_response({"status": "reset"})
-            return
+            elif path == "/api/reset":
+                with STATE_LOCK:
+                    STATE["status"] = "idle"
+                    STATE["stage"] = 0
+                    STATE["progress_percent"] = 0.0
+                    STATE["error_message"] = None
+                    STATE["ripped_tracks"] = []
+                self.send_json_response({"status": "reset"})
+                return
 
-        self.send_response(404)
-        self.send_cors_headers()
-        self.end_headers()
+            self.send_response(404)
+            self.send_cors_headers()
+            self.end_headers()
+        except Exception as e:
+            if is_client_disconnect(e):
+                self.close_connection = True
+            else:
+                raise
 
     def send_json_response(self, data: dict, status_code: int = 200):
-        body = json.dumps(data).encode("utf-8")
-        self.send_response(status_code)
-        self.send_cors_headers()
-        self.send_header("Content-Type", "application/json")
-        self.send_header("Content-Length", str(len(body)))
-        self.end_headers()
-        self.wfile.write(body)
+        try:
+            body = json.dumps(data).encode("utf-8")
+            self.send_response(status_code)
+            self.send_cors_headers()
+            self.send_header("Content-Type", "application/json")
+            self.send_header("Content-Length", str(len(body)))
+            self.end_headers()
+            self.safe_write(body)
+        except Exception as e:
+            if is_client_disconnect(e):
+                self.close_connection = True
+            else:
+                raise
 
     def serve_video_range(self, file_path: str):
         """Serve video files with HTTP 206 Partial Content support for smooth seeking."""
@@ -334,8 +419,12 @@ class NCISAutomationHandler(BaseHTTPRequestHandler):
                 break
             try:
                 out_file.write(chunk)
-            except (ConnectionResetError, BrokenPipeError):
-                break
+                out_file.flush()
+            except Exception as e:
+                if is_client_disconnect(e):
+                    self.close_connection = True
+                    break
+                raise
             bytes_left -= len(chunk)
 
     def run_makemkv_rip(self, dvd_drive: str, scratch_dir: str, season: int, disc: int):
@@ -512,7 +601,7 @@ class NCISAutomationHandler(BaseHTTPRequestHandler):
 
 def start_server():
     refresh_detected_tools()
-    server = HTTPServer((HOST, PORT), NCISAutomationHandler)
+    server = RobustThreadingHTTPServer((HOST, PORT), NCISAutomationHandler)
     print(f"\n=======================================================")
     print(f" NCIS DVD Automation Engine running at http://{HOST}:{PORT}")
     print(f" Connect your NCIS DVD-to-Plex Web Studio to localhost:{PORT}")

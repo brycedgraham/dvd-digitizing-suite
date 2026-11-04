@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useRef } from 'react';
 import { PipelineSettings, WorkerState, DiscProgress } from '../types';
 import { getSeasonInfo, getEpisodesBySeasonAndDisc } from '../data/ncisCatalog';
 import {
@@ -61,34 +61,66 @@ export const DigitizeMissionControl: React.FC<DigitizeMissionControlProps> = ({
   const episodes = getEpisodesBySeasonAndDisc(selectedSeason, selectedDisc);
   const seasonInfo = getSeasonInfo(selectedSeason);
 
+  const isPollingRef = useRef(false);
+  const abortControllerRef = useRef<AbortController | null>(null);
+
   // Poll Python local backend at http://127.0.0.1:5000/api/status
-  const checkBackendStatus = async () => {
-    setIsCheckingServer(true);
+  const checkBackendStatus = async (isManual = false) => {
+    if (isPollingRef.current && !isManual) return;
+    if (isManual) {
+      setIsCheckingServer(true);
+    }
+    isPollingRef.current = true;
+
+    // Clean up any in-flight controller
+    if (abortControllerRef.current) {
+      abortControllerRef.current.abort();
+    }
+    const controller = new AbortController();
+    abortControllerRef.current = controller;
+
+    // 4000ms timeout allows Windows disk/optical drive I/O to respond without premature abort
+    const timeoutId = setTimeout(() => controller.abort(), 4000);
+
     try {
       const res = await fetch('http://127.0.0.1:5000/api/status', {
-        signal: AbortSignal.timeout(1500),
+        signal: controller.signal,
       });
+      clearTimeout(timeoutId);
       if (res.ok) {
         const data: WorkerState = await res.json();
         setServerState(data);
         setIsServerConnected(true);
-        if (data.detected_tools.dvd_drives.length > 0) {
-          setDvdDrive(data.detected_tools.dvd_drives[0]);
+        if (data.detected_tools?.dvd_drives && data.detected_tools.dvd_drives.length > 0) {
+          setDvdDrive((prev) => (prev ? prev : data.detected_tools.dvd_drives[0]));
         }
       } else {
         setIsServerConnected(false);
       }
-    } catch {
+    } catch (err: unknown) {
+      clearTimeout(timeoutId);
+      if (err instanceof DOMException && err.name === 'AbortError') {
+        // Expected on cancellation or unmount
+        return;
+      }
       setIsServerConnected(false);
     } finally {
-      setIsCheckingServer(false);
+      isPollingRef.current = false;
+      if (isManual) {
+        setIsCheckingServer(false);
+      }
     }
   };
 
   useEffect(() => {
-    checkBackendStatus();
-    const interval = setInterval(checkBackendStatus, 3000);
-    return () => clearInterval(interval);
+    checkBackendStatus(true);
+    const interval = setInterval(() => checkBackendStatus(false), 3000);
+    return () => {
+      clearInterval(interval);
+      if (abortControllerRef.current) {
+        abortControllerRef.current.abort();
+      }
+    };
   }, []);
 
   // 1-Click Digitize Disc Handler
@@ -225,7 +257,7 @@ export const DigitizeMissionControl: React.FC<DigitizeMissionControlProps> = ({
             </div>
 
             <button
-              onClick={checkBackendStatus}
+              onClick={() => checkBackendStatus(true)}
               disabled={isCheckingServer}
               className="p-1.5 rounded-lg bg-slate-800 hover:bg-slate-700 text-slate-300 transition-colors"
               title="Refresh connection status"
