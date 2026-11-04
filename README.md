@@ -7,8 +7,16 @@ A dedicated media engineering toolkit and automation pipeline designed to digiti
 ## ⚡ 1-Click Automated Workflow
 
 ### 1. Launch the Local Python Automation Server
+**Recommended — one-click launcher:** double-click **`start.bat`**, or run in PowerShell:
 ```powershell
-# Open PowerShell in the project directory and start the zero-dependency backend
+.\start.ps1                # default port 5000, opens browser when ready
+.\start.ps1 -Port 8080     # custom port
+.\start.ps1 -NoBrowser     # don't auto-open the browser
+```
+The launcher runs pre-flight checks (Python, MakeMKV, HandBrakeCLI, optical drive, built frontend in `dist\`), starts the server, and opens `http://127.0.0.1:5000` once it answers health checks. If port 5000 is already serving, it just re-opens the studio instead of starting a second instance.
+
+Manual alternative (no pre-flight checks):
+```powershell
 python backend/server.py
 ```
 The server starts at `http://127.0.0.1:5000` and automatically:
@@ -65,44 +73,10 @@ P:\Plex Media\TV Shows\
 
 | Script | Purpose |
 | :--- | :--- |
+| `start.ps1` | One-click Windows launcher: pre-flight checks, starts the server, opens the browser. |
+| `start.bat` | Double-click wrapper for `start.ps1` (bypasses script execution policy). |
 | `backend/server.py` | Local Python automation server (MakeMKV & HandBrake runner + video streamer). |
-| `Dockerfile` | Multi-stage Docker build for Linux, Unraid, TrueNAS, and Docker Desktop. |
-| `docker-compose.yml` | Container orchestration with optical drive pass-through and storage mounts. |
-| `Test-NCISSetup.ps1` | Interactive PC environment doctor: checks tools, drives, storage, and script permissions. |
-| `Encode-NCIS-SxxDyy.ps1` | Standalone batch PowerShell script if you prefer running without the Python server. |
-| `Rename-NCIS-SxxDyy.ps1` | Fast standalone renamer for files already transcoded via the HandBrake desktop GUI. |
 | `NCIS_DVD_Decomb.json` | Official HandBrake GUI preset file (import via *Presets → Options → Import from file*). |
-
----
-
-## 🐳 Docker & Unraid Deployment
-
-You can run the entire studio inside a Docker container with optical drive pass-through:
-
-### 1. 1-Command Docker Run
-```bash
-docker run -d \
-  --name ncis-dvd-studio \
-  --restart unless-stopped \
-  --device=/dev/sr0:/dev/sr0 \
-  -p 5000:5000 \
-  -v $(pwd)/scratch:/scratch \
-  -v /path/to/plex/media:/plex \
-  ncis-dvd-to-plex-studio:latest
-```
-
-### 2. Using Docker Compose
-```bash
-# Build and start container
-docker compose up -d
-```
-Access the studio at `http://localhost:5000`.
-
-### 3. Optical Drive Permissions on Linux
-Ensure the user running Docker belongs to the `cdrom` group:
-```bash
-sudo usermod -aG cdrom $USER
-```
 
 ---
 
