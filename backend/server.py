@@ -223,6 +223,20 @@ class NCISAutomationHandler(BaseHTTPRequestHandler):
                 self.safe_write(data)
                 return
 
+            # Target Folder File Inspector (Idempotency check)
+            elif path == "/api/inspect":
+                scratch_dir = query.get("scratch_dir", ["C:\\MakeMKV_Rips"])[0]
+                plex_dir = query.get("plex_dir", ["P:\\Plex Media\\TV Shows"])[0]
+                try:
+                    season = int(query.get("season", [1])[0])
+                    disc = int(query.get("disc", [1])[0])
+                except (ValueError, TypeError):
+                    season, disc = 1, 1
+
+                info = self.inspect_target_folders(scratch_dir, plex_dir, season, disc)
+                self.send_json_response(info)
+                return
+
             # Video Streaming with HTTP Byte-Range support
             elif path == "/api/stream":
                 file_param = query.get("file", [""])[0]
@@ -292,33 +306,44 @@ class NCISAutomationHandler(BaseHTTPRequestHandler):
                 # Start MakeMKV ripping task in background
                 dvd_drive = payload.get("dvd_drive", "D:")
                 scratch_dir = payload.get("scratch_dir", r"C:\MakeMKV_Rips\NCIS")
-                season = payload.get("season", 1)
-                disc = payload.get("disc", 1)
+                season = int(payload.get("season", 1))
+                disc = int(payload.get("disc", 1))
+                force = bool(payload.get("force", False))
 
                 threading.Thread(
                     target=self.run_makemkv_rip,
-                    args=(dvd_drive, scratch_dir, season, disc),
+                    args=(dvd_drive, scratch_dir, season, disc, force),
                     daemon=True
                 ).start()
 
-                self.send_json_response({"status": "started", "message": "MakeMKV rip started in background."})
+                self.send_json_response({"status": "started", "message": "MakeMKV rip check started in background."})
                 return
 
             elif path == "/api/transcode":
                 # Start HandBrakeCLI batch transcode
                 tracks = payload.get("tracks", [])
                 plex_dir = payload.get("plex_dir", r"P:\Plex Media\TV Shows")
-                season = payload.get("season", 1)
-                rf_quality = payload.get("rf_quality", 19)
+                season = int(payload.get("season", 1))
+                rf_quality = int(payload.get("rf_quality", 19))
                 codec = payload.get("codec", "x264")
+                overwrite = bool(payload.get("overwrite", False))
 
                 threading.Thread(
                     target=self.run_handbrake_transcode,
-                    args=(tracks, plex_dir, season, rf_quality, codec),
+                    args=(tracks, plex_dir, season, rf_quality, codec, overwrite),
                     daemon=True
                 ).start()
 
                 self.send_json_response({"status": "started", "message": "HandBrake transcode started in background."})
+                return
+
+            elif path == "/api/inspect":
+                scratch_dir = payload.get("scratch_dir", r"C:\MakeMKV_Rips")
+                plex_dir = payload.get("plex_dir", r"P:\Plex Media\TV Shows")
+                season = int(payload.get("season", 1))
+                disc = int(payload.get("disc", 1))
+                info = self.inspect_target_folders(scratch_dir, plex_dir, season, disc)
+                self.send_json_response(info)
                 return
 
             elif path == "/api/reset":
@@ -427,7 +452,50 @@ class NCISAutomationHandler(BaseHTTPRequestHandler):
                 raise
             bytes_left -= len(chunk)
 
-    def run_makemkv_rip(self, dvd_drive: str, scratch_dir: str, season: int, disc: int):
+    def inspect_target_folders(self, scratch_dir: str, plex_dir: str, season: int, disc: int):
+        """Inspect target scratch and Plex directories to report existing files for idempotent execution."""
+        target_scratch = Path(scratch_dir) / f"NCIS_S{season:02d}_D{disc}"
+        target_plex = Path(plex_dir) / "NCIS (2003)" / f"Season {season:02d}"
+
+        scratch_tracks = []
+        if target_scratch.is_dir():
+            for idx, f in enumerate(sorted(target_scratch.glob("*.mkv"))):
+                if f.is_file():
+                    size_mb = round(f.stat().st_size / (1024 * 1024))
+                    scratch_tracks.append({
+                        "filename": f.name,
+                        "sourceFile": str(f),
+                        "fileSizeMb": size_mb,
+                        "trackIndex": idx,
+                        "isValid": size_mb >= 50
+                    })
+
+        plex_episodes = []
+        if target_plex.is_dir():
+            for f in sorted(list(target_plex.glob("*.mkv")) + list(target_plex.glob("*.mp4"))):
+                if f.is_file():
+                    size_mb = round(f.stat().st_size / (1024 * 1024))
+                    plex_episodes.append({
+                        "filename": f.name,
+                        "targetFile": str(f),
+                        "fileSizeMb": size_mb,
+                        "isValid": size_mb >= 25
+                    })
+
+        return {
+            "season": season,
+            "disc": disc,
+            "scratch_dir": str(target_scratch),
+            "scratch_exists": target_scratch.is_dir(),
+            "scratch_tracks": scratch_tracks,
+            "scratch_valid_count": len([t for t in scratch_tracks if t["isValid"]]),
+            "plex_dir": str(target_plex),
+            "plex_exists": target_plex.is_dir(),
+            "plex_episodes": plex_episodes,
+            "plex_valid_count": len([e for e in plex_episodes if e["isValid"]])
+        }
+
+    def run_makemkv_rip(self, dvd_drive: str, scratch_dir: str, season: int, disc: int, force: bool = False):
         with STATE_LOCK:
             STATE["status"] = "ripping"
             STATE["stage"] = 2
@@ -436,7 +504,35 @@ class NCISAutomationHandler(BaseHTTPRequestHandler):
 
         target_dir = Path(scratch_dir) / f"NCIS_S{season:02d}_D{disc}"
         target_dir.mkdir(parents=True, exist_ok=True)
-        add_log(f"Starting MakeMKV rip from drive {dvd_drive} into {target_dir}")
+        add_log(f"Target scratch folder: {target_dir}")
+
+        # Idempotency check: scan for existing non-empty ripped files (> 50MB)
+        existing_mkv = sorted([
+            f for f in target_dir.glob("*.mkv")
+            if f.is_file() and f.stat().st_size > 50 * 1024 * 1024
+        ])
+
+        if existing_mkv and not force:
+            add_log(f"[IDEMPOTENT] Found {len(existing_mkv)} valid ripped track(s) already in {target_dir}.")
+            add_log(f"[IDEMPOTENT] Skipping optical disc read. Reusing existing lossless MKVs.")
+            tracks_data = []
+            for idx, f in enumerate(existing_mkv):
+                size_mb = round(f.stat().st_size / (1024 * 1024))
+                tracks_data.append({
+                    "sourceFile": str(f),
+                    "filename": f.name,
+                    "durationEstimate": "44:00",
+                    "durationMinutes": 44.0,
+                    "fileSizeMb": size_mb,
+                    "trackIndex": idx
+                })
+            with STATE_LOCK:
+                STATE["status"] = "awaiting_mapping"
+                STATE["stage"] = 3
+                STATE["progress_percent"] = 100.0
+                STATE["ripped_tracks"] = tracks_data
+            add_log(f"Loaded {len(tracks_data)} existing tracks! Ready for episode title verification.")
+            return
 
         makemkv_bin = STATE["detected_tools"]["makemkv"]
         if not makemkv_bin:
@@ -448,18 +544,24 @@ class NCISAutomationHandler(BaseHTTPRequestHandler):
                     STATE["progress_percent"] = float(p)
                 add_log(f"Ripping optical disc streams: {p}%")
 
-            # Generate mock track metadata
-            mock_tracks = [
-                {
-                    "sourceFile": str(target_dir / f"title_t{i:02d}.mkv"),
+            # Generate mock track metadata and write placeholder files if target_dir exists
+            mock_tracks = []
+            for i in range(4):
+                file_path = target_dir / f"title_t{i:02d}.mkv"
+                if not file_path.exists():
+                    try:
+                        file_path.write_bytes(b"\x00" * 1024)
+                    except Exception:
+                        pass
+                mock_tracks.append({
+                    "sourceFile": str(file_path),
                     "filename": f"title_t{i:02d}.mkv",
                     "durationEstimate": "43:40",
                     "durationMinutes": 43.6,
                     "fileSizeMb": 1080 + (i * 25),
                     "trackIndex": i
-                }
-                for i in range(4)
-            ]
+                })
+
             with STATE_LOCK:
                 STATE["status"] = "awaiting_mapping"
                 STATE["stage"] = 3
@@ -469,7 +571,7 @@ class NCISAutomationHandler(BaseHTTPRequestHandler):
             return
 
         # Execute real MakeMKV CLI command
-        # Syntax: makemkvcon mkv dev:/dev/sr0 all <target_dir> --minlength=900 (or disc:0)
+        add_log(f"Starting MakeMKV rip from drive {dvd_drive} into {target_dir}")
         disc_target = f"dev:{dvd_drive}" if dvd_drive.startswith("/dev/") else "disc:0"
         cmd = [
             makemkv_bin,
@@ -523,7 +625,7 @@ class NCISAutomationHandler(BaseHTTPRequestHandler):
                 STATE["status"] = "error"
                 STATE["error_message"] = str(e)
 
-    def run_handbrake_transcode(self, tracks: list, plex_dir: str, season: int, rf: int, codec: str):
+    def run_handbrake_transcode(self, tracks: list, plex_dir: str, season: int, rf: int, codec: str, overwrite: bool = False):
         with STATE_LOCK:
             STATE["status"] = "transcoding"
             STATE["stage"] = 4
@@ -531,10 +633,12 @@ class NCISAutomationHandler(BaseHTTPRequestHandler):
 
         target_season_dir = Path(plex_dir) / "NCIS (2003)" / f"Season {season:02d}"
         target_season_dir.mkdir(parents=True, exist_ok=True)
-        add_log(f"Starting HandBrake batch transcode into {target_season_dir}")
+        add_log(f"Target Plex library folder: {target_season_dir}")
 
         hb_bin = STATE["detected_tools"]["handbrake"]
         encoder = "x265_10bit" if codec == "x265_10bit" else "x264"
+        skipped_count = 0
+        encoded_count = 0
 
         for idx, track in enumerate(tracks):
             input_file = track.get("sourceFile")
@@ -545,7 +649,20 @@ class NCISAutomationHandler(BaseHTTPRequestHandler):
                 STATE["current_file"] = output_filename
                 STATE["current_episode"] = f"Track {idx+1}/{len(tracks)}: {output_filename}"
 
+            # Idempotency check: check if destination file already exists and is non-empty (>25MB)
+            if not overwrite and os.path.isfile(output_file):
+                file_size = os.path.getsize(output_file)
+                if file_size > 25 * 1024 * 1024:
+                    size_mb = round(file_size / (1024 * 1024))
+                    add_log(f"[IDEMPOTENT] [{idx+1}/{len(tracks)}] Already in Plex library: {output_filename} ({size_mb} MB). Skipping re-encode.")
+                    skipped_count += 1
+                    with STATE_LOCK:
+                        overall_pct = ((idx + 1) / len(tracks)) * 100.0
+                        STATE["progress_percent"] = round(overall_pct, 1)
+                    continue
+
             add_log(f"[{idx+1}/{len(tracks)}] Encoding: {output_filename} with DVD Decomb (RF {rf})")
+            encoded_count += 1
 
             if not hb_bin or not os.path.isfile(input_file or ""):
                 # Simulation mode
@@ -597,7 +714,11 @@ class NCISAutomationHandler(BaseHTTPRequestHandler):
             STATE["status"] = "completed"
             STATE["stage"] = 5
             STATE["progress_percent"] = 100.0
-        add_log("All episodes encoded and placed in Plex folder! Ready to stream.")
+
+        if skipped_count > 0:
+            add_log(f"Batch completed: {encoded_count} encoded, {skipped_count} skipped (idempotent - already present in Plex library).")
+        else:
+            add_log("All episodes encoded and placed in Plex folder! Ready to stream.")
 
 def start_server():
     refresh_detected_tools()

@@ -26,7 +26,7 @@ interface EpisodeMappingStudioProps {
   selectedSeason: number;
   selectedDisc: number;
   settings: PipelineSettings;
-  onStartTranscode: (mappings: DiscTrackMapping[]) => void;
+  onStartTranscode: (mappings: DiscTrackMapping[], overwrite?: boolean) => void;
 }
 
 export const EpisodeMappingStudio: React.FC<EpisodeMappingStudioProps> = ({
@@ -43,6 +43,8 @@ export const EpisodeMappingStudio: React.FC<EpisodeMappingStudioProps> = ({
   const [duration, setDuration] = useState<number>(2620); // ~43:40
   const [isMuted, setIsMuted] = useState<boolean>(false);
   const [customFileUrl, setCustomFileUrl] = useState<string | null>(null);
+  const [existingPlexFiles, setExistingPlexFiles] = useState<string[]>([]);
+  const [overwritePlex, setOverwritePlex] = useState<boolean>(false);
 
   // Initialize track mappings
   const [mappings, setMappings] = useState<DiscTrackMapping[]>(() => {
@@ -56,6 +58,32 @@ export const EpisodeMappingStudio: React.FC<EpisodeMappingStudioProps> = ({
       isSpecialExtra: false,
     }));
   });
+
+  // Check which episodes are already encoded in Plex destination
+  useEffect(() => {
+    const fetchInspection = async () => {
+      try {
+        const res = await fetch('http://127.0.0.1:5000/api/inspect', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            scratch_dir: settings.sourceDirectory,
+            plex_dir: settings.plexLibraryDirectory,
+            season: selectedSeason,
+            disc: selectedDisc,
+          }),
+        });
+        if (res.ok) {
+          const data = await res.json();
+          const filenames = (data.plex_episodes || []).map((e: { filename: string }) => e.filename.toLowerCase());
+          setExistingPlexFiles(filenames);
+        }
+      } catch {
+        // Ignored if offline
+      }
+    };
+    fetchInspection();
+  }, [selectedSeason, selectedDisc, settings.plexLibraryDirectory]);
 
   // Re-sync when season/disc changes
   useEffect(() => {
@@ -472,7 +500,7 @@ export const EpisodeMappingStudio: React.FC<EpisodeMappingStudioProps> = ({
                       )}
                     </div>
 
-                    {/* Assigned Episode Dropdown */}
+                    {/* Assigned Episode Dropdown & In-Plex status */}
                     <div className="space-y-1">
                       <select
                         value={ep?.id || ''}
@@ -487,8 +515,15 @@ export const EpisodeMappingStudio: React.FC<EpisodeMappingStudioProps> = ({
                         ))}
                       </select>
 
-                      <div className="text-[10px] font-mono text-slate-400 truncate">
-                        Plex: {ep ? formatPlexName(ep) : 'Unassigned'}
+                      <div className="flex items-center justify-between text-[10px] font-mono text-slate-400">
+                        <span className="truncate">
+                          Plex: {ep ? formatPlexName(ep) : 'Unassigned'}
+                        </span>
+                        {ep && existingPlexFiles.includes(formatPlexName(ep).toLowerCase()) && (
+                          <span className="text-emerald-400 font-semibold shrink-0 ml-2 bg-emerald-500/10 px-1.5 py-0.5 rounded border border-emerald-500/20">
+                            Already in Plex (Will skip)
+                          </span>
+                        )}
                       </div>
                     </div>
                   </div>
@@ -496,13 +531,37 @@ export const EpisodeMappingStudio: React.FC<EpisodeMappingStudioProps> = ({
               })}
             </div>
 
-            {/* Primary Action Button: Start HandBrake Transcoding */}
-            <div className="pt-3 border-t border-slate-800 space-y-2">
+            {/* Idempotent Plex Status & Primary Action Button */}
+            <div className="pt-3 border-t border-slate-800 space-y-2.5">
+              {mappings.some((m) => m.matchedEpisode && existingPlexFiles.includes(formatPlexName(m.matchedEpisode).toLowerCase())) && (
+                <div className="bg-slate-950 p-2.5 rounded-lg border border-emerald-500/30 text-xs flex flex-col sm:flex-row sm:items-center justify-between gap-2">
+                  <span className="text-emerald-400 font-mono text-[11px] flex items-center gap-1.5">
+                    <CheckCircle2 className="w-3.5 h-3.5 text-emerald-400 shrink-0" />
+                    <span>
+                      {mappings.filter((m) => m.matchedEpisode && existingPlexFiles.includes(formatPlexName(m.matchedEpisode).toLowerCase())).length} of {mappings.length} episodes already in Plex
+                    </span>
+                  </span>
+                  <label className="flex items-center gap-1.5 text-[11px] text-slate-400 cursor-pointer hover:text-slate-200">
+                    <input
+                      type="checkbox"
+                      checked={overwritePlex}
+                      onChange={(e) => setOverwritePlex(e.target.checked)}
+                      className="rounded border-slate-700 text-amber-500 focus:ring-amber-500 bg-slate-900"
+                    />
+                    <span>Force re-encode all</span>
+                  </label>
+                </div>
+              )}
+
               <button
-                onClick={() => onStartTranscode(mappings)}
+                onClick={() => onStartTranscode(mappings, overwritePlex)}
                 className="w-full py-3 px-4 bg-amber-500 hover:bg-amber-400 text-slate-950 font-bold rounded-lg text-xs flex items-center justify-center gap-2 shadow-lg transition-transform active:scale-95"
               >
-                <span>Confirm All & Start HandBrake Transcoding</span>
+                <span>
+                  {mappings.some((m) => m.matchedEpisode && existingPlexFiles.includes(formatPlexName(m.matchedEpisode).toLowerCase())) && !overwritePlex
+                    ? `Confirm & Transcode Missing (${mappings.length - mappings.filter((m) => m.matchedEpisode && existingPlexFiles.includes(formatPlexName(m.matchedEpisode).toLowerCase())).length} remaining)`
+                    : 'Confirm All & Start HandBrake Transcoding'}
+                </span>
                 <ArrowRight className="w-4 h-4" />
               </button>
 

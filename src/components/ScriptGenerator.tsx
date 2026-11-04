@@ -66,13 +66,15 @@ export const ScriptGenerator: React.FC<ScriptGeneratorProps> = ({
 param (
     [string]$SourceDir = "${settings.sourceDirectory}",
     [string]$PlexRootDir = "${settings.plexLibraryDirectory}",
-    [string]$HandBrakeCliPath = "${settings.handbrakeCliPath}"
+    [string]$HandBrakeCliPath = "${settings.handbrakeCliPath}",
+    [switch]$Overwrite = $false
 )
 
 $ErrorActionPreference = "Stop"
 
 Write-Host "==========================================================" -ForegroundColor Cyan
 Write-Host "  NCIS Season ${selectedSeason} Disc ${selectedDisc} Batch Encoder & Plex Renamer" -ForegroundColor Cyan
+Write-Host "  Idempotent mode: Existing Plex episodes will be skipped" -ForegroundColor DarkCyan
 Write-Host "==========================================================" -ForegroundColor Cyan
 
 # 1. Locate HandBrakeCLI
@@ -113,6 +115,8 @@ ${trackMappings}
 # 5. Process Episodes
 $total = $Episodes.Count
 $current = 0
+$skipped = 0
+$encoded = 0
 
 foreach ($item in $Episodes) {
     $current++
@@ -125,17 +129,22 @@ foreach ($item in $Episodes) {
     Write-Host "Source: $inputFile" -ForegroundColor Gray
     Write-Host "Target: $outputFile" -ForegroundColor Cyan
 
+    # Idempotent re-run check: skip if file already exists in Plex and is non-empty (>25MB)
+    if (Test-Path $outputFile) {
+        $existingItem = Get-Item $outputFile
+        $existingSizeMb = [math]::Round($existingItem.Length / 1MB, 1)
+        if (-not $Overwrite -and $existingItem.Length -gt 25MB) {
+            Write-Host "  [IDEMPOTENT] Already exists in Plex: $($item.Target) ($existingSizeMb MB) - Skipping encode." -ForegroundColor Green
+            $skipped++
+            continue
+        } else {
+            Write-Host "  Overwriting existing file: $($item.Target)" -ForegroundColor Yellow
+        }
+    }
+
     if (-not (Test-Path $inputFile)) {
         Write-Warning "Input file '$($item.Source)' not found in '$SourceDir'. Skipping this track."
         continue
-    }
-
-    if (Test-Path $outputFile) {
-        $overwrite = Read-Host "Target file already exists. Overwrite? (y/N)"
-        if ($overwrite -ne "y" -and $overwrite -ne "Y") {
-            Write-Host "Skipping existing file." -ForegroundColor Gray
-            continue
-        }
     }
 
     # Execute HandBrakeCLI with NTSC DVD Decomb and Plex Settings
@@ -163,6 +172,7 @@ foreach ($item in $Episodes) {
 
     if ($LASTEXITCODE -eq 0) {
         Write-Host "Successfully encoded in $elapsedMinutes mins: $($item.Target)" -ForegroundColor Green
+        $encoded++
     } else {
         Write-Error "HandBrake failed on $($item.Source) with exit code $LASTEXITCODE"
     }
@@ -170,7 +180,11 @@ foreach ($item in $Episodes) {
 
 Write-Host ""
 Write-Host "==========================================================" -ForegroundColor Green
-Write-Host "  Disc Complete! Episodes ready for Plex library scanner." -ForegroundColor Green
+if ($skipped -gt 0) {
+    Write-Host "  Disc Complete! $encoded newly encoded, $skipped skipped (idempotent)." -ForegroundColor Green
+} else {
+    Write-Host "  Disc Complete! All $encoded episodes ready for Plex library scanner." -ForegroundColor Green
+}
 Write-Host "==========================================================" -ForegroundColor Green
 `;
   };
@@ -188,6 +202,7 @@ Write-Host "==========================================================" -Foregro
     return `# =====================================================================
 # NCIS Season ${selectedSeason} Disc ${selectedDisc} - Fast Plex File Renamer
 # Use this if you already encoded tracks in HandBrake GUI and need instant Plex names!
+# Idempotent: Skips files already renamed.
 # =====================================================================
 
 param (
@@ -204,12 +219,15 @@ foreach ($map in $Mappings) {
     $fullOldPath = Join-Path $Folder $map.OldName
     $fullNewPath = Join-Path $Folder $map.NewName
 
-    if (Test-Path $fullOldPath) {
-        Write-Host "Renaming: $($map.OldName) -> $($map.NewName)" -ForegroundColor Yellow
+    if (Test-Path $fullNewPath) {
+        $destSizeMb = [math]::Round((Get-Item $fullNewPath).Length / 1MB, 1)
+        Write-Host "  [IDEMPOTENT] Target already exists: $($map.NewName) ($destSizeMb MB) - Skipping rename." -ForegroundColor Green
+    } elseif (Test-Path $fullOldPath) {
+        Write-Host "  Renaming: $($map.OldName) -> $($map.NewName)" -ForegroundColor Yellow
         Rename-Item -Path $fullOldPath -NewName $map.NewName
-        Write-Host "Done!" -ForegroundColor Green
+        Write-Host "  Done!" -ForegroundColor Green
     } else {
-        Write-Warning "File not found: $($map.OldName) (Skipping)"
+        Write-Warning "  File not found: $($map.OldName) (Skipping)"
     }
 }
 
@@ -224,22 +242,29 @@ Write-Host "Renaming completed for Disc ${selectedDisc}!" -ForegroundColor Cyan
         const sourceFile = `title_t0${idx}.mkv`;
         const plexName = formatPlexName(ep);
         return `echo.
+if not "%OVERWRITE%"=="1" if exist "%TARGET_DIR%\\${plexName}" (
+    echo [IDEMPOTENT] [%idx%/${episodes.length}] Already exists in Plex: ${plexName} - Skipping.
+    goto skip_${idx}
+)
 echo [${idx + 1}/${episodes.length}] Encoding ${ep.title}...
-"%HB_CLI%" -i "%SOURCE_DIR%\\${sourceFile}" -o "%TARGET_DIR%\\${plexName}" -e x264 -q ${settings.rfQuality} --rate 29.97 --pfr --auto-anamorphic --comb-detect --decomb -a 1 -E copy:ac3 --markers --optimize`;
+"%HB_CLI%" -i "%SOURCE_DIR%\\${sourceFile}" -o "%TARGET_DIR%\\${plexName}" -e x264 -q ${settings.rfQuality} --rate 29.97 --pfr --auto-anamorphic --comb-detect --decomb -a 1 -E copy:ac3 --markers --optimize
+:skip_${idx}`;
       })
       .join('\n');
 
     return `@echo off
 rem =====================================================================
 rem NCIS Season ${selectedSeason} Disc ${selectedDisc} Batch Encoder
+rem Set OVERWRITE=1 to force re-encoding of existing files.
 rem =====================================================================
 
 set "SOURCE_DIR=${settings.sourceDirectory}"
 set "TARGET_DIR=${settings.plexLibraryDirectory}\\NCIS (2003)\\Season ${sStr}"
 set "HB_CLI=${settings.handbrakeCliPath}"
+set "OVERWRITE=0"
 
 echo ==========================================================
-echo NCIS Season ${selectedSeason} Disc ${selectedDisc} Batch Pipeline
+echo NCIS Season ${selectedSeason} Disc ${selectedDisc} Batch Pipeline (Idempotent)
 echo ==========================================================
 
 if not exist "%TARGET_DIR%" (

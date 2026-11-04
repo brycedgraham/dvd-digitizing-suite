@@ -1,5 +1,5 @@
 import React, { useState, useEffect, useRef } from 'react';
-import { PipelineSettings, WorkerState, DiscProgress } from '../types';
+import { PipelineSettings, WorkerState, DiscProgress, TargetFolderInspection } from '../types';
 import { getSeasonInfo, getEpisodesBySeasonAndDisc } from '../data/ncisCatalog';
 import {
   Disc,
@@ -16,6 +16,7 @@ import {
   Sliders,
   Sparkles,
   ExternalLink,
+  Zap,
 } from 'lucide-react';
 
 interface DigitizeMissionControlProps {
@@ -42,6 +43,9 @@ export const DigitizeMissionControl: React.FC<DigitizeMissionControlProps> = ({
   const [dvdDrive, setDvdDrive] = useState('D:');
   const [isServerConnected, setIsServerConnected] = useState(false);
   const [isCheckingServer, setIsCheckingServer] = useState(false);
+  const [inspection, setInspection] = useState<TargetFolderInspection | null>(null);
+  const [forceReRip, setForceReRip] = useState(false);
+
   const [serverState, setServerState] = useState<WorkerState>({
     status: 'idle',
     stage: 0,
@@ -63,6 +67,28 @@ export const DigitizeMissionControl: React.FC<DigitizeMissionControlProps> = ({
 
   const isPollingRef = useRef(false);
   const abortControllerRef = useRef<AbortController | null>(null);
+
+  // Inspect target folders for pre-existing files (idempotency check)
+  const inspectTargetFolders = async () => {
+    try {
+      const res = await fetch('http://127.0.0.1:5000/api/inspect', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          scratch_dir: settings.sourceDirectory,
+          plex_dir: settings.plexLibraryDirectory,
+          season: selectedSeason,
+          disc: selectedDisc,
+        }),
+      });
+      if (res.ok) {
+        const data: TargetFolderInspection = await res.json();
+        setInspection(data);
+      }
+    } catch {
+      // Ignored if backend is offline
+    }
+  };
 
   // Poll Python local backend at http://127.0.0.1:5000/api/status
   const checkBackendStatus = async (isManual = false) => {
@@ -114,14 +140,17 @@ export const DigitizeMissionControl: React.FC<DigitizeMissionControlProps> = ({
 
   useEffect(() => {
     checkBackendStatus(true);
-    const interval = setInterval(() => checkBackendStatus(false), 3000);
+    inspectTargetFolders();
+    const interval = setInterval(() => {
+      checkBackendStatus(false);
+    }, 3000);
     return () => {
       clearInterval(interval);
       if (abortControllerRef.current) {
         abortControllerRef.current.abort();
       }
     };
-  }, []);
+  }, [selectedSeason, selectedDisc, settings.sourceDirectory, settings.plexLibraryDirectory]);
 
   // 1-Click Digitize Disc Handler
   const handleDigitizeClick = async () => {
@@ -135,9 +164,10 @@ export const DigitizeMissionControl: React.FC<DigitizeMissionControlProps> = ({
             scratch_dir: settings.sourceDirectory,
             season: selectedSeason,
             disc: selectedDisc,
+            force: forceReRip,
           }),
         });
-        checkBackendStatus();
+        checkBackendStatus(true);
       } catch (err) {
         alert('Failed to contact local Python server: ' + err);
       }
@@ -149,6 +179,30 @@ export const DigitizeMissionControl: React.FC<DigitizeMissionControlProps> = ({
 
   // Simulated run for preview or when Python server is not yet started
   const runSimulation = () => {
+    // If existing tracks detected and user didn't force re-rip, reuse them instantly
+    if (inspection && inspection.scratch_valid_count > 0 && !forceReRip) {
+      setServerState((prev) => ({
+        ...prev,
+        status: 'awaiting_mapping',
+        stage: 3,
+        progress_percent: 100,
+        ripped_tracks: inspection.scratch_tracks.map((t, idx) => ({
+          sourceFile: t.sourceFile,
+          filename: t.filename,
+          durationEstimate: '44:00',
+          durationMinutes: 44.0,
+          fileSizeMb: t.fileSizeMb,
+          trackIndex: idx,
+        })),
+        logs: [
+          ...prev.logs,
+          `[IDEMPOTENT] Reusing ${inspection.scratch_valid_count} existing ripped tracks from ${inspection.scratch_dir}.`,
+          `[IDEMPOTENT] Optical disc read skipped. Ready for episode title verification.`,
+        ],
+      }));
+      return;
+    }
+
     setIsSimulating(true);
     setServerState((prev) => ({
       ...prev,
@@ -395,6 +449,82 @@ export const DigitizeMissionControl: React.FC<DigitizeMissionControlProps> = ({
             </p>
           </div>
         </div>
+
+        {/* Idempotent Target Folder Detection Banner */}
+        {inspection && (inspection.scratch_valid_count > 0 || inspection.plex_valid_count > 0) && (
+          <div className="mt-2 bg-slate-950/80 border border-emerald-500/30 rounded-lg p-3.5 text-left space-y-2.5">
+            <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-1.5 pb-2 border-b border-slate-800/80">
+              <span className="text-xs font-bold text-emerald-400 flex items-center gap-1.5 uppercase tracking-wider font-mono">
+                <CheckCircle2 className="w-4 h-4 text-emerald-400 shrink-0" />
+                Idempotency Engine: Pre-existing Files Detected
+              </span>
+              <span className="text-[11px] font-mono text-slate-400">
+                Safe to rerun · Skips duplicate work automatically
+              </span>
+            </div>
+
+            <div className="grid grid-cols-1 sm:grid-cols-2 gap-2.5 text-xs">
+              {/* Scratch status */}
+              <div className="p-2.5 rounded-lg bg-slate-900 border border-slate-800 space-y-1">
+                <div className="flex items-center justify-between">
+                  <span className="text-slate-200 font-semibold flex items-center gap-1.5">
+                    <HardDrive className="w-3.5 h-3.5 text-amber-400" />
+                    Scratch Directory (Disc {selectedDisc})
+                  </span>
+                  <span className={`font-mono text-[10px] px-2 py-0.5 rounded font-bold ${
+                    inspection.scratch_valid_count > 0
+                      ? 'bg-emerald-500/10 text-emerald-300 border border-emerald-500/30'
+                      : 'text-slate-400 bg-slate-950'
+                  }`}>
+                    {inspection.scratch_valid_count} ripped MKVs
+                  </span>
+                </div>
+                <p className="text-[11px] text-slate-400 truncate">
+                  {inspection.scratch_valid_count > 0
+                    ? `Ready in NCIS_S${String(selectedSeason).padStart(2, '0')}_D${selectedDisc}. Ripping will reuse them instantly.`
+                    : `Folder empty. Optical disc rip required.`}
+                </p>
+              </div>
+
+              {/* Plex status */}
+              <div className="p-2.5 rounded-lg bg-slate-900 border border-slate-800 space-y-1">
+                <div className="flex items-center justify-between">
+                  <span className="text-slate-200 font-semibold flex items-center gap-1.5">
+                    <Disc className="w-3.5 h-3.5 text-blue-400" />
+                    Plex Season {selectedSeason} Library
+                  </span>
+                  <span className={`font-mono text-[10px] px-2 py-0.5 rounded font-bold ${
+                    inspection.plex_valid_count > 0
+                      ? 'bg-blue-500/10 text-blue-300 border border-blue-500/30'
+                      : 'text-slate-400 bg-slate-950'
+                  }`}>
+                    {inspection.plex_valid_count} in Plex
+                  </span>
+                </div>
+                <p className="text-[11px] text-slate-400 truncate">
+                  {inspection.plex_valid_count > 0
+                    ? `Existing encoded episodes will be skipped on transcode.`
+                    : `No finished files in Season ${String(selectedSeason).padStart(2, '0')} yet.`}
+                </p>
+              </div>
+            </div>
+
+            {/* Force re-rip checkbox option */}
+            {inspection.scratch_valid_count > 0 && (
+              <div className="pt-1 flex items-center justify-between text-xs text-slate-400">
+                <label className="flex items-center gap-2 cursor-pointer hover:text-slate-200">
+                  <input
+                    type="checkbox"
+                    checked={forceReRip}
+                    onChange={(e) => setForceReRip(e.target.checked)}
+                    className="rounded border-slate-700 text-amber-500 focus:ring-amber-500 bg-slate-900"
+                  />
+                  <span>Force re-rip from optical drive (ignore existing {inspection.scratch_valid_count} MKVs)</span>
+                </label>
+              </div>
+            )}
+          </div>
+        )}
       </div>
 
       {/* Main Action Hub: Big Digitize Button or Mapping Alert */}
@@ -406,7 +536,7 @@ export const DigitizeMissionControl: React.FC<DigitizeMissionControlProps> = ({
               <CheckCircle2 className="w-6 h-6" />
             </div>
             <h4 className="text-lg font-bold text-white">
-              Disc Ripped Successfully! Ready to Verify Titles
+              Disc Tracks Ready for Verification!
             </h4>
             <p className="text-xs text-slate-300">
               {serverState.ripped_tracks.length} title tracks extracted from Disc {selectedDisc}. Use the
@@ -446,8 +576,18 @@ export const DigitizeMissionControl: React.FC<DigitizeMissionControlProps> = ({
                 <>
                   <RotateCw className="w-5 h-5 animate-spin" />
                   <span>
-                    {serverState.status === 'ripping' ? 'Ripping DVD Tracks...' : 'Transcoding...'} ({serverState.progress_percent}%)
+                    {serverState.status === 'ripping' ? 'Checking & Extracting Tracks...' : 'Transcoding...'} ({serverState.progress_percent}%)
                   </span>
+                </>
+              ) : inspection && inspection.scratch_valid_count > 0 && !forceReRip ? (
+                <>
+                  <Zap className="w-5 h-5 fill-current text-slate-950" />
+                  <span>Re-use {inspection.scratch_valid_count} Existing Rips (Instant)</span>
+                </>
+              ) : forceReRip ? (
+                <>
+                  <Play className="w-5 h-5 fill-current" />
+                  <span>Force Re-rip Disc {selectedDisc} from Drive {dvdDrive}</span>
                 </>
               ) : (
                 <>
@@ -458,8 +598,9 @@ export const DigitizeMissionControl: React.FC<DigitizeMissionControlProps> = ({
             </button>
 
             <p className="text-xs text-slate-400">
-              Extracts clean episode tracks from DVD drive <strong>{dvdDrive}</strong>, ignores the ~15GB Play All track,
-              and prepares files for title card verification.
+              {inspection && inspection.scratch_valid_count > 0 && !forceReRip
+                ? `Discovered ${inspection.scratch_valid_count} existing MKVs in scratch folder. Optical disc read will be skipped.`
+                : `Extracts clean episode tracks from DVD drive ${dvdDrive}, ignores the ~15GB Play All track, and verifies title cards.`}
             </p>
           </div>
         )}

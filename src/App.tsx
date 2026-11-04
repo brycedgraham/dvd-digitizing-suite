@@ -126,9 +126,9 @@ export default function App() {
     });
   };
 
-  const handleStartTranscodeFromMapping = async (mappings: DiscTrackMapping[]) => {
+  const handleStartTranscodeFromMapping = async (mappings: DiscTrackMapping[], overwrite: boolean = false) => {
     try {
-      // Attempt triggering local Python server
+      // Attempt triggering local Python server (idempotent: skips existing unless overwrite=true)
       await fetch('http://127.0.0.1:5000/api/transcode', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
@@ -138,6 +138,7 @@ export default function App() {
           season: selectedSeason,
           rf_quality: settings.rfQuality,
           codec: settings.videoCodec,
+          overwrite: overwrite,
         }),
       });
     } catch {

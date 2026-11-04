@@ -86,3 +86,27 @@ export interface WorkerState {
   }>;
   error_message?: string | null;
 }
+
+export interface TargetFolderInspection {
+  season: number;
+  disc: number;
+  scratch_dir: string;
+  scratch_exists: boolean;
+  scratch_tracks: Array<{
+    filename: string;
+    sourceFile: string;
+    fileSizeMb: number;
+    trackIndex: number;
+    isValid: boolean;
+  }>;
+  scratch_valid_count: number;
+  plex_dir: string;
+  plex_exists: boolean;
+  plex_episodes: Array<{
+    filename: string;
+    targetFile: string;
+    fileSizeMb: number;
+    isValid: boolean;
+  }>;
+  plex_valid_count: number;
+}
