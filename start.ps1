@@ -79,15 +79,29 @@ if ($mkv) {
     Write-Host "       Install from https://www.makemkv.com/download/"
 }
 
-$hb = Find-Tool "HandBrakeCLI.exe" @(
+$hbPaths = @(
     "C:\Program Files\HandBrake\HandBrakeCLI.exe",
-    "C:\Program Files (x86)\HandBrake\HandBrakeCLI.exe"
+    "C:\Program Files (x86)\HandBrake\HandBrakeCLI.exe",
+    "C:\HandBrake\HandBrakeCLI.exe",
+    "C:\HandBrakeCLI\HandBrakeCLI.exe",
+    "C:\Tools\HandBrakeCLI.exe",
+    "C:\ProgramData\chocolatey\bin\HandBrakeCLI.exe",
+    "$env:LOCALAPPDATA\Programs\HandBrake\HandBrakeCLI.exe",
+    "$env:USERPROFILE\scoop\shims\HandBrakeCLI.exe"
 )
+$hb = Find-Tool "HandBrakeCLI.exe" $hbPaths
 if ($hb) {
     Write-Host "[PASS] HandBrakeCLI: $hb" -ForegroundColor Green
 } else {
-    Write-Host "[WARN] HandBrakeCLI not found - transcoding will run in simulation mode." -ForegroundColor Yellow
-    Write-Host "       Install the HandBrake desktop app (includes CLI): https://handbrake.fr/downloads.php"
+    $hasGui = (Test-Path "C:\Program Files\HandBrake\HandBrake.exe") -or (Test-Path "C:\Program Files (x86)\HandBrake\HandBrake.exe")
+    if ($hasGui) {
+        Write-Host "[WARN] HandBrake Desktop GUI is installed, but HandBrakeCLI.exe is missing!" -ForegroundColor Yellow
+        Write-Host "       The desktop GUI app does NOT include the CLI required for automation." -ForegroundColor Yellow
+        Write-Host "       Install the CLI via:  winget install HandBrake.HandBrake.CLI" -ForegroundColor Cyan
+    } else {
+        Write-Host "[WARN] HandBrakeCLI not found - automated transcoding requires HandBrakeCLI." -ForegroundColor Yellow
+        Write-Host "       Install via:  winget install HandBrake.HandBrake.CLI" -ForegroundColor Cyan
+    }
 }
 
 # --- 4. Optical drive (WMI logical disks; DriveType 5 = CD-ROM) ---

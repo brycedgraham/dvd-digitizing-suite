@@ -10,7 +10,7 @@ import { ScriptGenerator } from './components/ScriptGenerator';
 import { BoxSetTracker } from './components/BoxSetTracker';
 import { WorkflowGuide } from './components/WorkflowGuide';
 import { EnvironmentSetupDoctor } from './components/EnvironmentSetupDoctor';
-import { getEpisodesBySeasonAndDisc } from './data/ncisCatalog';
+import { getEpisodesBySeasonAndDisc, formatPlexName } from './data/ncisCatalog';
 
 const DEFAULT_SETTINGS: PipelineSettings = {
   sourceDirectory: 'C:\\MakeMKV_Rips\\NCIS_S01_D1',
@@ -128,14 +128,22 @@ export default function App() {
 
   const handleStartTranscodeFromMapping = async (mappings: DiscTrackMapping[], overwrite: boolean = false) => {
     try {
-      // Attempt triggering local Python server (idempotent: skips existing unless overwrite=true)
+      const enrichedTracks = mappings.map((m) => ({
+        ...m,
+        targetPlexName: m.matchedEpisode ? formatPlexName(m.matchedEpisode) : m.customPlexName,
+      }));
+
+      // Trigger local Python server (idempotent: skips existing unless overwrite=true)
       await fetch('http://127.0.0.1:5000/api/transcode', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
-          tracks: mappings,
+          tracks: enrichedTracks,
           plex_dir: settings.plexLibraryDirectory,
+          scratch_dir: settings.sourceDirectory,
+          handbrake_path: settings.handbrakeCliPath,
           season: selectedSeason,
+          disc: selectedDisc,
           rf_quality: settings.rfQuality,
           codec: settings.videoCodec,
           overwrite: overwrite,

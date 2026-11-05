@@ -127,41 +127,160 @@ def find_executable(name: str, standard_win_paths: list):
     """Locate CLI executable in PATH or standard Program Files locations."""
     # Check PATH first
     for path_dir in os.environ.get("PATH", "").split(os.pathsep):
-        candidate = os.path.join(path_dir, name)
+        if not path_dir.strip():
+            continue
+        candidate = os.path.join(path_dir.strip(), name)
         if os.path.isfile(candidate) and os.access(candidate, os.X_OK):
             return candidate
 
     # Check known Windows locations
     for win_path in standard_win_paths:
-        if os.path.isfile(win_path):
-            return win_path
+        if not win_path:
+            continue
+        expanded = os.path.expandvars(win_path)
+        if os.path.isfile(expanded):
+            return expanded
 
     return None
 
-def refresh_detected_tools():
-    """Scan the system for HandBrakeCLI and MakeMKV."""
+def refresh_detected_tools(custom_handbrake: str = None):
+    """Scan the system for HandBrakeCLI and MakeMKV with exhaustive Windows path coverage."""
+    localappdata = os.environ.get("LOCALAPPDATA", r"C:\Users\Default\AppData\Local")
+    userprofile = os.environ.get("USERPROFILE", r"C:\Users\Default")
+
     hb_paths = [
+        custom_handbrake,
+        os.environ.get("HANDBRAKE_CLI"),
         r"C:\Program Files\HandBrake\HandBrakeCLI.exe",
         r"C:\Program Files (x86)\HandBrake\HandBrakeCLI.exe",
-    ]
-    mkv_paths = [
-        r"C:\Program Files (x86)\MakeMKV\makemkvcon64.exe",
-        r"C:\Program Files\MakeMKV\makemkvcon64.exe",
-        r"C:\Program Files (x86)\MakeMKV\makemkv.exe"
+        r"C:\HandBrake\HandBrakeCLI.exe",
+        r"C:\HandBrakeCLI\HandBrakeCLI.exe",
+        r"C:\Tools\HandBrakeCLI.exe",
+        r"C:\ProgramData\chocolatey\bin\HandBrakeCLI.exe",
+        os.path.join(localappdata, r"Programs\HandBrake\HandBrakeCLI.exe"),
+        os.path.join(userprofile, r"scoop\shims\HandBrakeCLI.exe"),
     ]
 
-    hb_cli = find_executable("HandBrakeCLI.exe", hb_paths) or find_executable("HandBrakeCLI", []) or find_executable("handbrake-cli", [])
-    mkv_cli = find_executable("makemkvcon64.exe", mkv_paths) or find_executable("makemkvcon", [])
+    mkv_paths = [
+        os.environ.get("MAKEMKV_CLI"),
+        r"C:\Program Files (x86)\MakeMKV\makemkvcon64.exe",
+        r"C:\Program Files\MakeMKV\makemkvcon64.exe",
+        r"C:\Program Files (x86)\MakeMKV\makemkv.exe",
+        r"C:\MakeMKV\makemkvcon64.exe",
+        r"C:\ProgramData\chocolatey\bin\makemkvcon64.exe",
+        os.path.join(userprofile, r"scoop\shims\makemkvcon64.exe"),
+    ]
+
+    # Search for winget package directory dynamically if on Windows
+    winget_dir = os.path.join(localappdata, r"Microsoft\WinGet\Packages")
+    if os.path.isdir(winget_dir):
+        for root, _, files in os.walk(winget_dir):
+            if "HandBrakeCLI.exe" in files:
+                hb_paths.insert(0, os.path.join(root, "HandBrakeCLI.exe"))
+            if "makemkvcon64.exe" in files:
+                mkv_paths.insert(0, os.path.join(root, "makemkvcon64.exe"))
+
+    hb_cli = find_executable("HandBrakeCLI.exe", [p for p in hb_paths if p]) or find_executable("HandBrakeCLI", []) or find_executable("handbrake-cli", [])
+    mkv_cli = find_executable("makemkvcon64.exe", [p for p in mkv_paths if p]) or find_executable("makemkvcon", [])
     drives = detect_optical_dvd_drives()
+
+    # Check if HandBrake GUI is present without CLI
+    has_hb_gui = False
+    gui_paths = [
+        r"C:\Program Files\HandBrake\HandBrake.exe",
+        r"C:\Program Files (x86)\HandBrake\HandBrake.exe",
+    ]
+    for gp in gui_paths:
+        if os.path.isfile(gp):
+            has_hb_gui = True
+            break
 
     with STATE_LOCK:
         STATE["detected_tools"]["handbrake"] = hb_cli
+        STATE["detected_tools"]["handbrake_gui_only"] = (not hb_cli and has_hb_gui)
         STATE["detected_tools"]["makemkv"] = mkv_cli
         STATE["detected_tools"]["dvd_drives"] = drives
 
-    add_log(f"Detected HandBrakeCLI: {hb_cli or 'NOT FOUND'}")
+    if hb_cli:
+        add_log(f"Detected HandBrakeCLI: {hb_cli}")
+    elif has_hb_gui:
+        add_log("Detected HandBrake GUI (HandBrake.exe), but HandBrakeCLI.exe is missing! Run 'winget install HandBrake.HandBrake.CLI' to install the CLI.", "warn")
+    else:
+        add_log("HandBrakeCLI: NOT FOUND (Run 'winget install HandBrake.HandBrake.CLI' or install from handbrake.fr)", "warn")
+
     add_log(f"Detected MakeMKV: {mkv_cli or 'NOT FOUND'}")
     add_log(f"Detected Optical DVD drives: {', '.join(drives)}")
+    return hb_cli
+
+def resolve_scratch_dir(scratch_dir: str, season: int, disc: int) -> Path:
+    """Intelligently resolve scratch directory without double-nesting NCIS_S01_D1."""
+    p = Path(scratch_dir)
+    target_tag = f"NCIS_S{season:02d}_D{disc}"
+
+    # 1. If p itself ends with NCIS_S01_D1 or similar (case-insensitive)
+    if p.name.upper() == target_tag.upper():
+        # Check if a nested folder was previously created
+        nested = p / target_tag
+        if nested.is_dir() and len(list(nested.glob("*.mkv"))) > 0:
+            return nested
+        return p
+
+    # 2. If subfolder exists
+    sub = p / target_tag
+    if sub.is_dir():
+        doubly_nested = sub / target_tag
+        if doubly_nested.is_dir() and len(list(doubly_nested.glob("*.mkv"))) > 0:
+            return doubly_nested
+        return sub
+
+    # 3. If p has .mkv files directly
+    if p.is_dir() and len(list(p.glob("*.mkv"))) > 0:
+        return p
+
+    return sub
+
+def resolve_source_file(input_file: str, scratch_path: Path, filename: str = None, idx: int = 0):
+    """Resolve the source MKV file to an absolute existing file path on disk."""
+    if input_file and os.path.isfile(input_file):
+        return os.path.abspath(input_file)
+
+    name_candidates = []
+    if filename:
+        name_candidates.append(filename)
+    if input_file:
+        name_candidates.append(Path(input_file).name)
+    name_candidates.extend([
+        f"title_t{idx:02d}.mkv",
+        f"title_t0{idx}.mkv",
+        f"title_{idx:02d}.mkv",
+        f"title{idx:02d}.mkv",
+    ])
+
+    search_dirs = [scratch_path]
+    if scratch_path.parent != scratch_path:
+        search_dirs.append(scratch_path.parent)
+
+    # Check subdirectories of scratch_path
+    if scratch_path.is_dir():
+        for item in scratch_path.iterdir():
+            if item.is_dir():
+                search_dirs.append(item)
+
+    for s_dir in search_dirs:
+        if not s_dir.is_dir():
+            continue
+        for name in name_candidates:
+            candidate = s_dir / name
+            if candidate.is_file() and candidate.stat().st_size > 5 * 1024 * 1024:
+                return str(candidate.resolve())
+
+    # Fallback: find any non-empty MKV by order
+    if scratch_path.is_dir():
+        all_mkvs = sorted([f for f in scratch_path.glob("*.mkv") if f.is_file() and f.stat().st_size > 5 * 1024 * 1024])
+        if idx < len(all_mkvs):
+            return str(all_mkvs[idx].resolve())
+
+    return None
 
 class NCISAutomationHandler(BaseHTTPRequestHandler):
     protocol_version = "HTTP/1.1"
@@ -323,14 +442,18 @@ class NCISAutomationHandler(BaseHTTPRequestHandler):
                 # Start HandBrakeCLI batch transcode
                 tracks = payload.get("tracks", [])
                 plex_dir = payload.get("plex_dir", r"P:\Plex Media\TV Shows")
+                scratch_dir = payload.get("scratch_dir", r"C:\MakeMKV_Rips")
+                handbrake_path = payload.get("handbrake_path")
                 season = int(payload.get("season", 1))
+                disc = int(payload.get("disc", 1))
                 rf_quality = int(payload.get("rf_quality", 19))
                 codec = payload.get("codec", "x264")
                 overwrite = bool(payload.get("overwrite", False))
+                simulate = bool(payload.get("simulate", False))
 
                 threading.Thread(
                     target=self.run_handbrake_transcode,
-                    args=(tracks, plex_dir, season, rf_quality, codec, overwrite),
+                    args=(tracks, plex_dir, scratch_dir, season, disc, rf_quality, codec, overwrite, handbrake_path, simulate),
                     daemon=True
                 ).start()
 
@@ -452,9 +575,11 @@ class NCISAutomationHandler(BaseHTTPRequestHandler):
                 raise
             bytes_left -= len(chunk)
 
+
+
     def inspect_target_folders(self, scratch_dir: str, plex_dir: str, season: int, disc: int):
         """Inspect target scratch and Plex directories to report existing files for idempotent execution."""
-        target_scratch = Path(scratch_dir) / f"NCIS_S{season:02d}_D{disc}"
+        target_scratch = resolve_scratch_dir(scratch_dir, season, disc)
         target_plex = Path(plex_dir) / "NCIS (2003)" / f"Season {season:02d}"
 
         scratch_tracks = []
@@ -464,7 +589,7 @@ class NCISAutomationHandler(BaseHTTPRequestHandler):
                     size_mb = round(f.stat().st_size / (1024 * 1024))
                     scratch_tracks.append({
                         "filename": f.name,
-                        "sourceFile": str(f),
+                        "sourceFile": str(f.resolve()),
                         "fileSizeMb": size_mb,
                         "trackIndex": idx,
                         "isValid": size_mb >= 50
@@ -477,7 +602,7 @@ class NCISAutomationHandler(BaseHTTPRequestHandler):
                     size_mb = round(f.stat().st_size / (1024 * 1024))
                     plex_episodes.append({
                         "filename": f.name,
-                        "targetFile": str(f),
+                        "targetFile": str(f.resolve()),
                         "fileSizeMb": size_mb,
                         "isValid": size_mb >= 25
                     })
@@ -502,7 +627,7 @@ class NCISAutomationHandler(BaseHTTPRequestHandler):
             STATE["progress_percent"] = 5.0
             STATE["error_message"] = None
 
-        target_dir = Path(scratch_dir) / f"NCIS_S{season:02d}_D{disc}"
+        target_dir = resolve_scratch_dir(scratch_dir, season, disc)
         target_dir.mkdir(parents=True, exist_ok=True)
         add_log(f"Target scratch folder: {target_dir}")
 
@@ -519,7 +644,7 @@ class NCISAutomationHandler(BaseHTTPRequestHandler):
             for idx, f in enumerate(existing_mkv):
                 size_mb = round(f.stat().st_size / (1024 * 1024))
                 tracks_data.append({
-                    "sourceFile": str(f),
+                    "sourceFile": str(f.resolve()),
                     "filename": f.name,
                     "durationEstimate": "44:00",
                     "durationMinutes": 44.0,
@@ -625,24 +750,69 @@ class NCISAutomationHandler(BaseHTTPRequestHandler):
                 STATE["status"] = "error"
                 STATE["error_message"] = str(e)
 
-    def run_handbrake_transcode(self, tracks: list, plex_dir: str, season: int, rf: int, codec: str, overwrite: bool = False):
+    def run_handbrake_transcode(self, tracks: list, plex_dir: str, scratch_dir: str, season: int, disc: int, rf: int, codec: str, overwrite: bool = False, handbrake_path: str = None, simulate: bool = False):
         with STATE_LOCK:
             STATE["status"] = "transcoding"
             STATE["stage"] = 4
             STATE["progress_percent"] = 0.0
+            STATE["error_message"] = None
 
         target_season_dir = Path(plex_dir) / "NCIS (2003)" / f"Season {season:02d}"
-        target_season_dir.mkdir(parents=True, exist_ok=True)
-        add_log(f"Target Plex library folder: {target_season_dir}")
+        try:
+            target_season_dir.mkdir(parents=True, exist_ok=True)
+            add_log(f"Target Plex library folder: {target_season_dir}")
+        except Exception as e:
+            add_log(f"[ERROR] Failed to access or create Plex destination folder '{target_season_dir}': {e}", "error")
+            with STATE_LOCK:
+                STATE["status"] = "error"
+                STATE["error_message"] = f"Cannot write to Plex directory: {e}"
+            return
 
-        hb_bin = STATE["detected_tools"]["handbrake"]
+        resolved_scratch = resolve_scratch_dir(scratch_dir, season, disc)
+        add_log(f"Source scratch folder: {resolved_scratch}")
+
+        # Ensure HandBrakeCLI is located
+        hb_bin = STATE["detected_tools"].get("handbrake")
+        if handbrake_path and os.path.isfile(handbrake_path):
+            hb_bin = handbrake_path
+        elif not hb_bin:
+            hb_bin = refresh_detected_tools(handbrake_path)
+
+        if not hb_bin and not simulate:
+            has_gui = STATE["detected_tools"].get("handbrake_gui_only", False)
+            if has_gui:
+                add_log("[ERROR] HandBrake GUI is installed, but HandBrakeCLI.exe was not found!", "error")
+                add_log("[FIX] HandBrake GUI does not include the CLI. Open PowerShell and run: winget install HandBrake.HandBrake.CLI", "error")
+            else:
+                add_log("[ERROR] HandBrakeCLI was not detected on this PC!", "error")
+                add_log("[FIX] Install HandBrakeCLI via PowerShell: winget install HandBrake.HandBrake.CLI (or download from https://handbrake.fr/downloads.php)", "error")
+            with STATE_LOCK:
+                STATE["status"] = "error"
+                STATE["error_message"] = "HandBrakeCLI.exe not found on system. Install via 'winget install HandBrake.HandBrake.CLI'"
+            return
+
         encoder = "x265_10bit" if codec == "x265_10bit" else "x264"
         skipped_count = 0
         encoded_count = 0
 
         for idx, track in enumerate(tracks):
-            input_file = track.get("sourceFile")
-            output_filename = track.get("targetPlexName", f"NCIS (2003) - S{season:02d}E{idx+1:02d}.mkv")
+            # Resolve source input file on disk
+            raw_input = track.get("sourceFile")
+            raw_filename = track.get("filename")
+            input_file = resolve_source_file(raw_input, resolved_scratch, raw_filename, idx)
+
+            # Determine Plex output filename (prefer full canonical title with episode name)
+            output_filename = track.get("targetPlexName")
+            if not output_filename:
+                matched_ep = track.get("matchedEpisode")
+                if matched_ep and isinstance(matched_ep, dict):
+                    ep_num = matched_ep.get("episode", idx + 1)
+                    ep_title = matched_ep.get("title", f"Episode {ep_num}")
+                    clean_title = re.sub(r'[\\/*?:"<>|]', "-", ep_title).strip()
+                    output_filename = f"NCIS (2003) - S{season:02d}E{ep_num:02d} - {clean_title}.mkv"
+                else:
+                    output_filename = f"NCIS (2003) - S{season:02d}E{idx+1:02d}.mkv"
+
             output_file = str(target_season_dir / output_filename)
 
             with STATE_LOCK:
@@ -661,18 +831,30 @@ class NCISAutomationHandler(BaseHTTPRequestHandler):
                         STATE["progress_percent"] = round(overall_pct, 1)
                     continue
 
-            add_log(f"[{idx+1}/{len(tracks)}] Encoding: {output_filename} with DVD Decomb (RF {rf})")
-            encoded_count += 1
+            # Verify input file exists
+            if not input_file and not simulate:
+                add_log(f"[ERROR] Source MKV file not found on disk for track {idx+1} ('{raw_input or raw_filename}')!", "error")
+                add_log(f"[ERROR] Searched in: {resolved_scratch}. Please verify MakeMKV rip has completed.", "error")
+                with STATE_LOCK:
+                    STATE["status"] = "error"
+                    STATE["error_message"] = f"Source MKV not found in {resolved_scratch} for {output_filename}"
+                return
 
-            if not hb_bin or not os.path.isfile(input_file or ""):
-                # Simulation mode
-                for p in range(5, 101, 10):
-                    time.sleep(0.4)
+            add_log(f"[{idx+1}/{len(tracks)}] Encoding: {output_filename} with DVD Decomb (RF {rf})")
+            if input_file:
+                add_log(f"    Source: {input_file} ({round(os.path.getsize(input_file)/(1024*1024))} MB)")
+
+            if simulate or not hb_bin:
+                # Explicit simulation mode
+                add_log(f"[SIMULATION ONLY - NO FILE CREATED] Simulating encode of {output_filename}...", "warn")
+                for p in range(10, 101, 15):
+                    time.sleep(0.5)
                     with STATE_LOCK:
                         overall = ((idx + (p / 100.0)) / len(tracks)) * 100.0
                         STATE["progress_percent"] = round(overall, 1)
                         STATE["speed_fps"] = 142.5
-                add_log(f"Finished encoding {output_filename}")
+                add_log(f"[SIMULATION] Finished simulated pass for {output_filename} (No file written)")
+                encoded_count += 1
                 continue
 
             # Real HandBrakeCLI execution
@@ -696,29 +878,76 @@ class NCISAutomationHandler(BaseHTTPRequestHandler):
             ]
 
             try:
-                proc = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True)
+                proc = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, universal_newlines=True)
+                last_hb_lines = []
                 for line in proc.stdout:
-                    # Regex for Encoding: task 1 of 1, 45.20 % (134.50 fps, avg 128.00 fps, ETA 00h02m14s)
-                    m = re.search(r"(\d+\.\d+)\s*%", line)
+                    line_str = line.strip()
+                    last_hb_lines.append(line_str)
+                    if len(last_hb_lines) > 20:
+                        last_hb_lines.pop(0)
+
+                    # Regex for HandBrake progress: e.g. 45.20 % (134.50 fps, avg 128.00 fps, ETA 00h02m14s)
+                    m = re.search(r"(\d+\.\d+)\s*%", line_str)
                     if m:
                         track_pct = float(m.group(1))
                         overall_pct = ((idx + (track_pct / 100.0)) / len(tracks)) * 100.0
                         with STATE_LOCK:
                             STATE["progress_percent"] = round(overall_pct, 1)
+                        # Extract fps
+                        m_fps = re.search(r"([\d\.]+)\s*fps", line_str)
+                        if m_fps:
+                            with STATE_LOCK:
+                                STATE["speed_fps"] = float(m_fps.group(1))
+
                 proc.wait()
-                add_log(f"Successfully transcoded {output_filename}")
+                if proc.returncode != 0:
+                    add_log(f"[ERROR] HandBrakeCLI exited with code {proc.returncode} while encoding {output_filename}", "error")
+                    for err_line in last_hb_lines[-6:]:
+                        add_log(f"    HandBrake output: {err_line}", "error")
+                    with STATE_LOCK:
+                        STATE["status"] = "error"
+                        STATE["error_message"] = f"HandBrakeCLI failed with exit code {proc.returncode} on {output_filename}"
+                    return
+
+                # Verify file was written to disk and has reasonable size (>10MB)
+                if os.path.isfile(output_file) and os.path.getsize(output_file) > 10 * 1024 * 1024:
+                    size_mb = round(os.path.getsize(output_file) / (1024 * 1024))
+                    add_log(f"[SUCCESS] Transcoded & verified in Plex: {output_filename} ({size_mb} MB)")
+                    encoded_count += 1
+                else:
+                    add_log(f"[ERROR] Output file missing or truncated: {output_file}", "error")
+                    with STATE_LOCK:
+                        STATE["status"] = "error"
+                        STATE["error_message"] = f"Transcoded file was not created: {output_filename}"
+                    return
+
             except Exception as e:
                 add_log(f"Error encoding {output_filename}: {e}", "error")
+                with STATE_LOCK:
+                    STATE["status"] = "error"
+                    STATE["error_message"] = str(e)
+                return
+
+        # Final verification: scan target_season_dir for real files
+        verified_files = []
+        if target_season_dir.is_dir():
+            for vf in sorted(list(target_season_dir.glob("*.mkv")) + list(target_season_dir.glob("*.mp4"))):
+                if vf.is_file() and vf.stat().st_size > 10 * 1024 * 1024:
+                    verified_files.append(f"{vf.name} ({round(vf.stat().st_size / (1024*1024))} MB)")
 
         with STATE_LOCK:
             STATE["status"] = "completed"
             STATE["stage"] = 5
             STATE["progress_percent"] = 100.0
 
-        if skipped_count > 0:
-            add_log(f"Batch completed: {encoded_count} encoded, {skipped_count} skipped (idempotent - already present in Plex library).")
+        if simulate:
+            add_log("[SIMULATION COMPLETE] Simulated batch finished. To produce real video files, install HandBrakeCLI ('winget install HandBrake.HandBrake.CLI').", "warn")
+        elif len(verified_files) > 0:
+            add_log(f"[COMPLETED] {len(verified_files)} episode(s) ready in Plex library: {target_season_dir}")
+            for vf_str in verified_files:
+                add_log(f"  ✓ {vf_str}")
         else:
-            add_log("All episodes encoded and placed in Plex folder! Ready to stream.")
+            add_log(f"[WARN] Encoding completed but no valid video files found in {target_season_dir}. Please review logs.", "warn")
 
 def start_server():
     refresh_detected_tools()

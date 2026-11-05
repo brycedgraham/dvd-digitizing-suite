@@ -47,56 +47,95 @@ export const EpisodeMappingStudio: React.FC<EpisodeMappingStudioProps> = ({
   const [overwritePlex, setOverwritePlex] = useState<boolean>(false);
 
   // Initialize track mappings
-  const [mappings, setMappings] = useState<DiscTrackMapping[]>(() => {
-    return episodes.map((ep, idx) => ({
-      trackId: `track-${idx}`,
-      sourceFile: `title_t0${idx}.mkv`,
-      fileSizeMb: 1080 + idx * 35,
-      durationEstimate: `${ep.runtimeMinutes}:20`,
-      matchedEpisode: ep,
-      isExcluded: false,
-      isSpecialExtra: false,
-    }));
+  const [inspection, setInspection] = useState<any>(null);
+  const [detectedHb, setDetectedHb] = useState<{ handbrake: string | null; handbrake_gui_only?: boolean }>({
+    handbrake: null,
   });
 
-  // Check which episodes are already encoded in Plex destination
+  // Helper to build initial mappings with real or fallback filenames and full targetPlexName
+  const buildInitialMappings = (scratchTracks?: any[]): DiscTrackMapping[] => {
+    return episodes.map((ep, idx) => {
+      const scratch = scratchTracks && scratchTracks[idx];
+      return {
+        trackId: `track-${idx}`,
+        sourceFile: scratch ? scratch.sourceFile : `title_t0${idx}.mkv`,
+        filename: scratch ? scratch.filename : `title_t0${idx}.mkv`,
+        targetPlexName: formatPlexName(ep),
+        fileSizeMb: scratch ? scratch.fileSizeMb : (1080 + idx * 35),
+        durationEstimate: `${ep.runtimeMinutes}:20`,
+        matchedEpisode: ep,
+        isExcluded: false,
+        isSpecialExtra: false,
+      };
+    });
+  };
+
+  // Initialize track mappings
+  const [mappings, setMappings] = useState<DiscTrackMapping[]>(() => buildInitialMappings());
+
+  // Check which episodes are already encoded in Plex destination and check scratch folder
   useEffect(() => {
     const fetchInspection = async () => {
       try {
-        const res = await fetch('http://127.0.0.1:5000/api/inspect', {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({
-            scratch_dir: settings.sourceDirectory,
-            plex_dir: settings.plexLibraryDirectory,
-            season: selectedSeason,
-            disc: selectedDisc,
+        const [inspectRes, statusRes] = await Promise.allSettled([
+          fetch('http://127.0.0.1:5000/api/inspect', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+              scratch_dir: settings.sourceDirectory,
+              plex_dir: settings.plexLibraryDirectory,
+              season: selectedSeason,
+              disc: selectedDisc,
+            }),
           }),
-        });
-        if (res.ok) {
-          const data = await res.json();
+          fetch('http://127.0.0.1:5000/api/status'),
+        ]);
+
+        if (statusRes.status === 'fulfilled' && statusRes.value.ok) {
+          const st = await statusRes.value.json();
+          if (st.detected_tools) {
+            setDetectedHb({
+              handbrake: st.detected_tools.handbrake,
+              handbrake_gui_only: st.detected_tools.handbrake_gui_only,
+            });
+          }
+        }
+
+        if (inspectRes.status === 'fulfilled' && inspectRes.value.ok) {
+          const data = await inspectRes.value.json();
+          setInspection(data);
           const filenames = (data.plex_episodes || []).map((e: { filename: string }) => e.filename.toLowerCase());
           setExistingPlexFiles(filenames);
+
+          // If real ripped scratch tracks are available, bind their exact paths
+          if (data.scratch_tracks && data.scratch_tracks.length > 0) {
+            setMappings((prev) => {
+              return prev.map((m, idx) => {
+                const s = data.scratch_tracks[idx];
+                if (s) {
+                  return {
+                    ...m,
+                    sourceFile: s.sourceFile,
+                    filename: s.filename,
+                    fileSizeMb: s.fileSizeMb,
+                    targetPlexName: m.matchedEpisode ? formatPlexName(m.matchedEpisode) : m.customPlexName,
+                  };
+                }
+                return m;
+              });
+            });
+          }
         }
       } catch {
         // Ignored if offline
       }
     };
     fetchInspection();
-  }, [selectedSeason, selectedDisc, settings.plexLibraryDirectory]);
+  }, [selectedSeason, selectedDisc, settings.plexLibraryDirectory, settings.sourceDirectory]);
 
   // Re-sync when season/disc changes
   useEffect(() => {
-    const updated = episodes.map((ep, idx) => ({
-      trackId: `track-${idx}`,
-      sourceFile: `title_t0${idx}.mkv`,
-      fileSizeMb: 1080 + idx * 35,
-      durationEstimate: `${ep.runtimeMinutes}:20`,
-      matchedEpisode: ep,
-      isExcluded: false,
-      isSpecialExtra: false,
-    }));
-    setMappings(updated);
+    setMappings(buildInitialMappings(inspection?.scratch_tracks));
     setActiveTrackIndex(0);
     setVerifiedTracks({});
     setCurrentTime(135);
@@ -248,6 +287,7 @@ export const EpisodeMappingStudio: React.FC<EpisodeMappingStudioProps> = ({
       updated[trackIdx] = {
         ...updated[trackIdx],
         matchedEpisode: selectedEp,
+        targetPlexName: selectedEp ? formatPlexName(selectedEp) : undefined,
       };
       return updated;
     });
@@ -258,7 +298,7 @@ export const EpisodeMappingStudio: React.FC<EpisodeMappingStudioProps> = ({
   return (
     <div className="space-y-6">
       {/* Page Title & Instructions */}
-      <div className="bg-slate-900 border border-slate-800 rounded-xl p-5 space-y-2">
+      <div className="bg-slate-900 border border-slate-800 rounded-xl p-5 space-y-3">
         <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3">
           <div>
             <h3 className="text-base font-bold text-white flex items-center gap-2">
@@ -282,6 +322,42 @@ export const EpisodeMappingStudio: React.FC<EpisodeMappingStudioProps> = ({
             </span>
           </div>
         </div>
+
+        {/* HandBrakeCLI / Tool Detection Warning Banner */}
+        {detectedHb.handbrake_gui_only && (
+          <div className="bg-amber-500/10 border border-amber-500/40 rounded-lg p-3 text-xs flex flex-col sm:flex-row sm:items-center justify-between gap-2.5">
+            <div className="space-y-0.5">
+              <span className="font-bold text-amber-300 flex items-center gap-1.5">
+                <AlertCircle className="w-4 h-4 text-amber-400 shrink-0" />
+                HandBrake Desktop GUI detected, but HandBrakeCLI is missing!
+              </span>
+              <p className="text-slate-300 text-[11px]">
+                The HandBrake desktop application does not include the CLI needed for automated transcoding. Run the command on the right in PowerShell to install it.
+              </p>
+            </div>
+            <code className="bg-slate-950 px-2.5 py-1 rounded text-amber-300 font-mono text-[11px] border border-amber-500/30 select-all shrink-0">
+              winget install HandBrake.HandBrake.CLI
+            </code>
+          </div>
+        )}
+
+        {/* Scratch Source Info */}
+        {inspection && (
+          <div className="flex flex-wrap items-center justify-between gap-2 text-[11px] font-mono text-slate-400 pt-2 border-t border-slate-800">
+            <div className="flex items-center gap-2">
+              <span className="text-slate-300 font-semibold">Scratch Source:</span>
+              <span className="text-amber-300 bg-slate-950 px-2 py-0.5 rounded border border-slate-800">
+                {inspection.scratch_dir} ({inspection.scratch_valid_count} MKV tracks found)
+              </span>
+            </div>
+            <div className="flex items-center gap-2">
+              <span className="text-slate-300 font-semibold">Plex Destination:</span>
+              <span className="text-blue-300 bg-slate-950 px-2 py-0.5 rounded border border-slate-800">
+                {inspection.plex_dir}
+              </span>
+            </div>
+          </div>
+        )}
       </div>
 
       {/* Main Dual-Panel Workspace */}

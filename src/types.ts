@@ -15,7 +15,9 @@ export interface NcisEpisode {
 
 export interface DiscTrackMapping {
   trackId: string;
-  sourceFile: string; // e.g. "title_t00.mkv"
+  sourceFile: string; // e.g. "title_t00.mkv" or full path
+  filename?: string;
+  targetPlexName?: string;
   fileSizeMb?: number;
   durationEstimate?: string;
   matchedEpisode: NcisEpisode | null;
@@ -73,6 +75,7 @@ export interface WorkerState {
   logs: string[];
   detected_tools: {
     handbrake: string | null;
+    handbrake_gui_only?: boolean;
     makemkv: string | null;
     dvd_drives: string[];
   };

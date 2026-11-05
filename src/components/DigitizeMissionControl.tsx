@@ -529,7 +529,171 @@ export const DigitizeMissionControl: React.FC<DigitizeMissionControlProps> = ({
 
       {/* Main Action Hub: Big Digitize Button or Mapping Alert */}
       <div className="bg-slate-900 border border-slate-800 rounded-xl p-6 text-center space-y-4">
-        {serverState.status === 'awaiting_mapping' ? (
+        {serverState.status === 'error' ? (
+          /* Error State Card */
+          <div className="max-w-xl mx-auto space-y-3 py-2 text-left bg-rose-950/30 border border-rose-500/40 rounded-xl p-5">
+            <div className="flex items-center gap-3 pb-2 border-b border-rose-500/30">
+              <div className="w-9 h-9 rounded-full bg-rose-500/20 text-rose-400 flex items-center justify-center shrink-0">
+                <AlertTriangle className="w-5 h-5" />
+              </div>
+              <div>
+                <h4 className="text-sm font-bold text-rose-200">
+                  Transcoding Halted: Error Detected
+                </h4>
+                <p className="text-xs text-rose-300/80">
+                  {serverState.error_message || 'An error occurred during transcoding.'}
+                </p>
+              </div>
+            </div>
+
+            {serverState.detected_tools?.handbrake_gui_only && (
+              <div className="bg-slate-950 p-3 rounded-lg border border-rose-500/30 space-y-2 text-xs">
+                <span className="font-semibold text-amber-300 block">
+                  Root Cause: HandBrake GUI is installed, but HandBrakeCLI is missing!
+                </span>
+                <p className="text-slate-300 text-[11px]">
+                  The standard HandBrake desktop application does not include the command-line interface. Run this in PowerShell to install HandBrakeCLI:
+                </p>
+                <div className="bg-slate-900 p-2 rounded font-mono text-amber-300 text-[11px] select-all border border-slate-800">
+                  winget install HandBrake.HandBrake.CLI
+                </div>
+              </div>
+            )}
+
+            <div className="flex items-center gap-2 pt-1">
+              <button
+                onClick={handleReset}
+                className="px-4 py-2 bg-slate-800 hover:bg-slate-700 text-white font-semibold rounded-lg text-xs transition-colors"
+              >
+                Reset & Try Again
+              </button>
+              <button
+                onClick={() => {
+                  inspectTargetFolders();
+                  checkBackendStatus(true);
+                }}
+                className="px-3 py-2 text-xs text-slate-400 hover:text-white"
+              >
+                Re-check System
+              </button>
+            </div>
+          </div>
+        ) : serverState.status === 'completed' ? (
+          /* Completed State Card with Verification */
+          <div className="max-w-xl mx-auto space-y-4 py-2 text-center">
+            {inspection && inspection.plex_valid_count > 0 ? (
+              <div className="space-y-3">
+                <div className="w-12 h-12 rounded-full bg-emerald-500/20 border border-emerald-500/40 text-emerald-400 flex items-center justify-center mx-auto">
+                  <CheckCircle2 className="w-6 h-6" />
+                </div>
+                <div>
+                  <h4 className="text-lg font-bold text-white">
+                    Transcoding Complete & Verified in Plex!
+                  </h4>
+                  <p className="text-xs text-slate-300 mt-1">
+                    {inspection.plex_valid_count} episode file(s) confirmed in{' '}
+                    <span className="font-mono text-amber-300">{inspection.plex_dir}</span>
+                  </p>
+                </div>
+
+                <div className="bg-slate-950 p-3 rounded-lg border border-slate-800 text-left max-h-36 overflow-y-auto space-y-1">
+                  {inspection.plex_episodes.map((ep: any, i: number) => (
+                    <div key={i} className="flex items-center justify-between text-[11px] font-mono text-slate-300">
+                      <span className="truncate text-emerald-400">✓ {ep.filename}</span>
+                      <span className="text-slate-500 shrink-0 ml-2">{ep.fileSizeMb} MB</span>
+                    </div>
+                  ))}
+                </div>
+
+                <div className="flex items-center justify-center gap-3 pt-1">
+                  <button
+                    onClick={() => {
+                      onMarkDiscCompleted();
+                      setSelectedDisc(selectedDisc < 6 ? selectedDisc + 1 : 1);
+                      if (selectedDisc >= 6) {
+                        setSelectedSeason(selectedSeason < 8 ? selectedSeason + 1 : 1);
+                      }
+                      handleReset();
+                    }}
+                    className="px-5 py-2.5 bg-emerald-500 hover:bg-emerald-400 text-slate-950 font-bold rounded-lg text-xs flex items-center gap-2 shadow-lg transition-transform active:scale-95"
+                  >
+                    <span>Mark Disc Done & Advance to Next Disc</span>
+                    <ArrowRight className="w-4 h-4" />
+                  </button>
+
+                  <button
+                    onClick={handleReset}
+                    className="px-3 py-2 text-xs text-slate-400 hover:text-white"
+                  >
+                    Reset
+                  </button>
+                </div>
+              </div>
+            ) : (
+              /* Completed but 0 files detected in Plex folder */
+              <div className="space-y-3 text-left bg-amber-500/10 border border-amber-500/30 rounded-xl p-5">
+                <div className="flex items-center gap-3 pb-2 border-b border-amber-500/30">
+                  <div className="w-9 h-9 rounded-full bg-amber-500/20 text-amber-400 flex items-center justify-center shrink-0">
+                    <AlertTriangle className="w-5 h-5" />
+                  </div>
+                  <div>
+                    <h4 className="text-sm font-bold text-amber-300">
+                      Encoding Finished, but 0 Files Found in Plex Folder
+                    </h4>
+                    <p className="text-xs text-slate-300">
+                      Target:{' '}
+                      <span className="font-mono text-amber-200">
+                        {settings.plexLibraryDirectory}\NCIS (2003)\Season {String(selectedSeason).padStart(2, '0')}
+                      </span>
+                    </p>
+                  </div>
+                </div>
+
+                <div className="space-y-2 text-xs text-slate-300">
+                  <p>
+                    The transcoding engine finished, but no video files appeared in your Plex library folder. Common causes:
+                  </p>
+                  <ul className="list-disc list-inside space-y-1 text-slate-400 text-[11px]">
+                    <li>
+                      <strong className="text-white">HandBrakeCLI missing:</strong> HandBrake Desktop GUI does not include the CLI. The job ran in simulation mode without writing files. Run{' '}
+                      <code className="text-amber-300 font-mono">winget install HandBrake.HandBrake.CLI</code> in PowerShell.
+                    </li>
+                    <li>
+                      <strong className="text-white">Drive / Network Share Permissions:</strong> If writing to a network share (e.g. <code className="text-slate-300 font-mono">X:</code> or <code className="text-slate-300 font-mono">P:</code>), ensure the process has write permission.
+                    </li>
+                  </ul>
+                </div>
+
+                <div className="flex flex-wrap items-center gap-2 pt-2">
+                  <button
+                    onClick={() => {
+                      inspectTargetFolders();
+                      checkBackendStatus(true);
+                    }}
+                    className="px-3.5 py-1.5 bg-amber-500 hover:bg-amber-400 text-slate-950 font-bold rounded-lg text-xs transition-colors flex items-center gap-1.5"
+                  >
+                    <RotateCw className="w-3.5 h-3.5" />
+                    <span>Re-check Plex Folder Now</span>
+                  </button>
+
+                  <button
+                    onClick={onGoToMapping}
+                    className="px-3.5 py-1.5 bg-slate-800 hover:bg-slate-700 text-slate-200 rounded-lg text-xs transition-colors"
+                  >
+                    Re-open Episode Mapping Studio
+                  </button>
+
+                  <button
+                    onClick={handleReset}
+                    className="px-3 py-1.5 text-xs text-slate-400 hover:text-white"
+                  >
+                    Reset
+                  </button>
+                </div>
+              </div>
+            )}
+          </div>
+        ) : serverState.status === 'awaiting_mapping' ? (
           /* When ripping is done, invite user to the Episode Mapping Page with Video Player */
           <div className="max-w-xl mx-auto space-y-3 py-2">
             <div className="w-12 h-12 rounded-full bg-emerald-500/20 border border-emerald-500/40 text-emerald-400 flex items-center justify-center mx-auto">
