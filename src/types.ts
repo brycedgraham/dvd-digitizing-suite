@@ -39,7 +39,7 @@ export interface DiscProgress {
 
 export interface PipelineSettings {
   sourceDirectory: string; // e.g. "D:\RippedDVDs\NCIS_S01_D1"
-  plexLibraryDirectory: string; // e.g. "P:\Plex Media\TV Shows"
+  plexLibraryDirectory: string; // e.g. "X:\Media\TV Shows"
   handbrakeCliPath: string; // e.g. "C:\Program Files\HandBrake\HandBrakeCLI.exe"
   videoCodec: 'x264' | 'x265_10bit';
   rfQuality: number; // e.g. 19 for x264, 21 for x265

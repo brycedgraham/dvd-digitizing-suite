@@ -156,7 +156,7 @@ export const WorkflowGuide: React.FC = () => {
           </p>
 
           <div className="bg-slate-950 p-4 rounded-lg border border-slate-800 font-mono text-xs text-slate-300 space-y-1">
-            <div className="text-amber-400 font-semibold">P:\Plex Media\TV Shows\</div>
+            <div className="text-amber-400 font-semibold">X:\Media\TV Shows\</div>
             <div className="pl-4 text-slate-200">└── NCIS (2003)\</div>
             <div className="pl-8 text-slate-300">├── Season 01\</div>
             <div className="pl-12 text-emerald-400">├── NCIS (2003) - S01E01 - Yankee White.mkv</div>

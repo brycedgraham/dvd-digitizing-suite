@@ -66,7 +66,7 @@ A streamlined, automated server-side digitization architecture driven by a zero-
 - **Optical Drive & Paths**:
   - Optical DVD Drive selector (e.g. `D:`) with auto-detect button.
   - Scratch Temp Ripping folder (`C:\MakeMKV_Rips\NCIS`).
-  - Plex TV Library destination (`P:\Plex Media\TV Shows`).
+  - Plex TV Library destination (`X:\Media\TV Shows`).
 - **Primary CTA**: Large **"Digitize Disc"** button with live status badge (`Ready`, `Ripping DVD...`, `Awaiting Mapping`, `Transcoding...`, `Finished`).
 - **Live Worker Status**: Heartbeat indicator showing whether the local Python server is connected (`● Python Server Online on port 5000`) or running in demo simulation mode with 1-click launch instructions.
 

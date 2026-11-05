@@ -786,7 +786,7 @@ services:
             <section className="space-y-1.5">
               <h5 className="text-sm font-bold text-amber-400">4. Plex TV Library Configuration</h5>
               <p className="text-slate-400">
-                In Plex Web, add your parent folder (e.g. <code className="text-slate-200">P:\Plex Media\TV Shows</code>) as a <strong>TV Shows</strong> library. Ensure the Plex TV Series agent is set to <em>The Movie Database</em> or <em>TheTVDB</em>. Because files are tagged with <code className="text-slate-200">NCIS (2003)</code>, Plex will automatically download posters, episode descriptions, episode title cards, and the iconic theme music.
+                In Plex Web, add your parent folder (e.g. <code className="text-slate-200">X:\Media\TV Shows</code>) as a <strong>TV Shows</strong> library. Ensure the Plex TV Series agent is set to <em>The Movie Database</em> or <em>TheTVDB</em>. Because files are tagged with <code className="text-slate-200">NCIS (2003)</code>, Plex will automatically download posters, episode descriptions, episode title cards, and the iconic theme music.
               </p>
             </section>
           </div>

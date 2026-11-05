@@ -441,7 +441,7 @@ class NCISAutomationHandler(BaseHTTPRequestHandler):
             elif path == "/api/transcode":
                 # Start HandBrakeCLI batch transcode
                 tracks = payload.get("tracks", [])
-                plex_dir = payload.get("plex_dir", r"P:\Plex Media\TV Shows")
+                plex_dir = payload.get("plex_dir", r"X:\Media\TV Shows")
                 scratch_dir = payload.get("scratch_dir", r"C:\MakeMKV_Rips")
                 handbrake_path = payload.get("handbrake_path")
                 season = int(payload.get("season", 1))
@@ -462,7 +462,7 @@ class NCISAutomationHandler(BaseHTTPRequestHandler):
 
             elif path == "/api/inspect":
                 scratch_dir = payload.get("scratch_dir", r"C:\MakeMKV_Rips")
-                plex_dir = payload.get("plex_dir", r"P:\Plex Media\TV Shows")
+                plex_dir = payload.get("plex_dir", r"X:\Media\TV Shows")
                 season = int(payload.get("season", 1))
                 disc = int(payload.get("disc", 1))
                 info = self.inspect_target_folders(scratch_dir, plex_dir, season, disc)

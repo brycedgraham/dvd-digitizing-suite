@@ -54,7 +54,7 @@ Click **"Confirm All & Start HandBrake Transcoding"**. The backend runs `HandBra
 Plex requires strict naming with the series debut year `(2003)`:
 
 ```
-P:\Plex Media\TV Shows\
+X:\Media\TV Shows\
 └── NCIS (2003)\
     ├── Season 01\
     │   ├── NCIS (2003) - S01E01 - Yankee White.mkv

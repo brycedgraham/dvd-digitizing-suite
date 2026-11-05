@@ -354,7 +354,7 @@ pause
                 setSettings({ ...settings, plexLibraryDirectory: e.target.value })
               }
               className="w-full text-xs font-mono bg-slate-950 border border-slate-700 rounded-lg px-3 py-2 text-slate-200 focus:ring-1 focus:ring-amber-500"
-              placeholder="P:\Plex Media\TV Shows"
+              placeholder="X:\Media\TV Shows"
             />
             <p className="text-[10px] text-slate-400 mt-1">
               Appends \NCIS (2003)\Season {sStr} automatically

@@ -442,7 +442,7 @@ export const DigitizeMissionControl: React.FC<DigitizeMissionControlProps> = ({
               }
               disabled={isBusy}
               className="w-full bg-slate-950 border border-slate-700 rounded-lg px-3 py-2 font-mono text-white focus:ring-1 focus:ring-amber-500"
-              placeholder="P:\Plex Media\TV Shows"
+              placeholder="X:\Media\TV Shows"
             />
             <p className="text-[10px] text-slate-400 mt-1">
               Appends \NCIS (2003)\Season {String(selectedSeason).padStart(2, '0')}
