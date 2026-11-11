@@ -79,42 +79,34 @@ def get_optical_drives() -> list[str]:
     except Exception:
         return []
 
-
-def rip_disc(
-    drive_letter: str,
-    output_folder: Path,
-    title_name: str,
-    rip_all: bool = False,
-) -> list[Path]:
-    """Run makemkvcon in robot mode (-r) and parse PRGV progress lines."""
+def scan_disc_titles(drive_letter: str, min_len: int = 180) -> list[dict]:
+    """Scan optical disc with MakeMKV and return metadata for all valid titles."""
     if not makemkv_bin:
-        sys.exit(
-            "Error: MakeMKV (makemkvcon) not found. Please install MakeMKV."
-        )
+        sys.exit("Error: MakeMKV (makemkvcon) not found. Please install MakeMKV.")
 
-    job_folder = output_folder / title_name
-    job_folder.mkdir(parents=True, exist_ok=True)
+    clean_drive = drive_letter.strip().rstrip("\\/")
+    if not clean_drive.endswith(":"):
+        clean_drive += ":"
 
-    target_mode = "all" if rip_all else "largest"
-    min_len = "600"
+    print(f"\n--- Scanning Disc in {clean_drive} (filtering tracks under {min_len // 60} mins) ---")
 
-    print(f"\n--- Ripping Disc ({target_mode.upper()}) from {drive_letter} ---")
-
-    # -r enables robot output; --progress=-same routes progress to stdout
-    rip_cmd = [
+    scan_cmd = [
         makemkv_bin,
         "-r",
         "--progress=-same",
-        "mkv",
-        f"dev:{drive_letter}",
-        target_mode,
-        str(job_folder),
+        "info",
+        f"dev:{clean_drive}",
         f"--minlength={min_len}",
     ]
 
-    current_stage = "Initializing Drive"
+    titles: dict[int, dict] = {}
+    recent_messages: list[str] = []
+    current_stage = "Reading Disc Structure"
+
+    re_tinfo = re.compile(r'^TINFO:(\d+),(\d+),\d+,"(.*)"$')
+
     proc = subprocess.Popen(
-        rip_cmd,
+        scan_cmd,
         stdout=subprocess.PIPE,
         stderr=subprocess.STDOUT,
         text=True,
@@ -125,50 +117,224 @@ def rip_disc(
     if proc.stdout:
         for line in proc.stdout:
             line = line.strip()
-            # PRGC:code,id,"Operation Name"
-            if line.startswith("PRGC:") or line.startswith("PRGT:"):
+
+            if line.startswith("MSG:"):
                 parts = line.split('"')
                 if len(parts) >= 2:
-                    current_stage = parts[1][:26]
-            # PRGV:current,total,max (max is 65536)
+                    recent_messages.append(parts[1])
+
+            elif line.startswith("PRGC:") or line.startswith("PRGT:"):
+                parts = line.split('"')
+                if len(parts) >= 2:
+                    current_stage = parts[1][:28]
+
             elif line.startswith("PRGV:"):
                 try:
                     nums = line[5:].split(",")
-                    current_val = int(nums[0])
-                    total_val = int(nums[1])
-                    max_val = int(nums[2])
+                    total_val, max_val = int(nums[1]), int(nums[2])
                     if max_val > 0:
-                        overall_pct = (total_val / max_val) * 100.0
-                        task_pct = (current_val / max_val) * 100.0
-                        draw_progress_bar(
-                            "MakeMKV Rip",
-                            overall_pct,
-                            f"[{current_stage}: {task_pct:4.0f}%]",
-                        )
+                        pct = (total_val / max_val) * 100.0
+                        draw_progress_bar("Disc Scan", pct, f"[{current_stage}]")
                 except (ValueError, IndexError):
                     pass
 
+            elif line.startswith("TINFO:"):
+                m = re_tinfo.match(line)
+                if m:
+                    tid = int(m.group(1))
+                    code = int(m.group(2))
+                    val = m.group(3)
+
+                    if tid not in titles:
+                        titles[tid] = {
+                            "id": tid,
+                            "name": f"Title {tid}",
+                            "chapters": "?",
+                            "duration": "0:00:00",
+                            "size_str": "Unknown",
+                            "size_bytes": 0,
+                            "filename": f"title_t{tid:02d}.mkv",
+                        }
+
+                    if code == 2 and val:
+                        titles[tid]["name"] = val
+                    elif code == 8:
+                        titles[tid]["chapters"] = val
+                    elif code == 9:
+                        titles[tid]["duration"] = val
+                    elif code == 10:
+                        titles[tid]["size_str"] = val
+                    elif code == 11 and val.isdigit():
+                        titles[tid]["size_bytes"] = int(val)
+                    elif code == 27 and val:
+                        titles[tid]["filename"] = val
+
     proc.wait()
-    draw_progress_bar("MakeMKV Rip", 100.0, "[Done]")
+
+    if not titles:
+        print("\n\nMakeMKV could not find any valid titles on the disc:")
+        for msg in recent_messages[-8:]:
+            print(f"  -> {msg}")
+        sys.exit(f"\nScan failed (exit code {proc.returncode}).")
+
+    draw_progress_bar("Disc Scan", 100.0, "[Scan Complete]")
     print()
 
-    if proc.returncode != 0:
-        sys.exit(f"MakeMKV exited with error code {proc.returncode}.")
+    # Return titles sorted by their MakeMKV Title ID
+    return [titles[k] for k in sorted(titles.keys())]
 
-    created_mkvs = sorted(list(job_folder.glob("*.mkv")))
-    if not created_mkvs:
-        sys.exit("MakeMKV finished, but no .mkv files met the minimum length.")
 
-    if not rip_all:
-        largest = max(created_mkvs, key=lambda f: f.stat().st_size)
-        return [largest]
+def select_titles_to_rip(titles: list[dict]) -> list[dict]:
+    """Display an interactive table of scanned disc titles and let user pick."""
+    largest_tid = max(titles, key=lambda t: t["size_bytes"])["id"]
 
-    print(f"  Ripped {len(created_mkvs)} title(s) successfully.")
-    return created_mkvs
+    print("\n" + "=" * 72)
+    print(f"  {'Choice':<8} {'MakeMKV ID':<12} {'Duration':<12} {'Size':<12} {'Chapters':<10} {'Notes'}")
+    print("-" * 72)
 
+    for idx, t in enumerate(titles, 1):
+        note = "★ Main / Largest" if t["id"] == largest_tid else ""
+        print(
+            f"  [{idx:<2}]     Title #{t['id']:<5} {t['duration']:<12} "
+            f"{t['size_str']:<12} {t['chapters']:<10} {note}"
+        )
+    print("=" * 72)
+    print("  Selection Tips:")
+    print("   • Press [Enter] to rip ONLY the ★ Largest Title.")
+    print("   • Enter numbers separated by commas or ranges (e.g., '1,2' or '1-4') for multiple.")
+    print("   • Type 'all' to rip every listed title.")
+
+    while True:
+        raw = input("\nWhich title(s) do you want to rip? [Enter = Largest]: ").strip().lower()
+        if not raw:
+            return [t for t in titles if t["id"] == largest_tid]
+        if raw == "all":
+            return titles
+
+        selected_indices: set[int] = set()
+        valid = True
+        for part in raw.split(","):
+            part = part.strip()
+            if "-" in part:
+                bounds = part.split("-", 1)
+                if bounds[0].isdigit() and bounds[1].isdigit():
+                    start, end = int(bounds[0]), int(bounds[1])
+                    if 1 <= start <= end <= len(titles):
+                        selected_indices.update(range(start, end + 1))
+                    else:
+                        valid = False
+                else:
+                    valid = False
+            elif part.isdigit():
+                val = int(part)
+                if 1 <= val <= len(titles):
+                    selected_indices.add(val)
+                else:
+                    valid = False
+            else:
+                valid = False
+
+        if valid and selected_indices:
+            return [titles[i - 1] for i in sorted(selected_indices)]
+
+        print(f"Invalid selection. Enter numbers between 1 and {len(titles)}, '1,2', or 'all'.")
+
+
+def rip_selected_titles(
+    drive_letter: str,
+    output_folder: Path,
+    title_name: str,
+    selected_titles: list[dict],
+) -> list[Path]:
+    """Rip each user-selected title ID individually and return the resulting MKV paths."""
+    clean_drive = drive_letter.strip().rstrip("\\/")
+    if not clean_drive.endswith(":"):
+        clean_drive += ":"
+
+    job_folder = output_folder / title_name
+    job_folder.mkdir(parents=True, exist_ok=True)
+
+    ripped_files: list[Path] = []
+
+    for idx, t in enumerate(selected_titles, 1):
+        tid = t["id"]
+        label = f"Rip {idx}/{len(selected_titles)} (Title #{tid})"
+        print(f"\n--- Ripping Title #{tid} ({t['duration']}, {t['size_str']}) ---")
+
+        existing_before = set(job_folder.glob("*.mkv"))
+
+        rip_cmd = [
+            makemkv_bin,
+            "-r",
+            "--progress=-same",
+            "mkv",
+            f"dev:{clean_drive}",
+            str(tid),
+            str(job_folder),
+        ]
+
+        recent_messages: list[str] = []
+        current_stage = "Starting Rip"
+
+        proc = subprocess.Popen(
+            rip_cmd,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.STDOUT,
+            text=True,
+            encoding="utf-8",
+            errors="replace",
+        )
+
+        if proc.stdout:
+            for line in proc.stdout:
+                line = line.strip()
+                if line.startswith("MSG:"):
+                    parts = line.split('"')
+                    if len(parts) >= 2:
+                        recent_messages.append(parts[1])
+                elif line.startswith("PRGC:") or line.startswith("PRGT:"):
+                    parts = line.split('"')
+                    if len(parts) >= 2:
+                        current_stage = parts[1][:24]
+                elif line.startswith("PRGV:"):
+                    try:
+                        nums = line[5:].split(",")
+                        total_val, max_val = int(nums[1]), int(nums[2])
+                        if max_val > 0:
+                            pct = (total_val / max_val) * 100.0
+                            draw_progress_bar(label, pct, f"[{current_stage}]")
+                    except (ValueError, IndexError):
+                        pass
+
+        proc.wait()
+
+        existing_after = set(job_folder.glob("*.mkv"))
+        new_files = sorted(list(existing_after - existing_before))
+
+        if proc.returncode != 0 and not new_files:
+            print(f"\n\nMakeMKV failed while ripping Title #{tid}:")
+            for msg in recent_messages[-8:]:
+                print(f"  -> {msg}")
+            sys.exit(f"MakeMKV exited with code {proc.returncode}")
+
+        draw_progress_bar(label, 100.0, "[Done]")
+        print()
+
+        if new_files:
+            ripped_files.extend(new_files)
+        else:
+            # Fallback if filename overlapped an existing file
+            expected = job_folder / t["filename"]
+            if expected.exists():
+                ripped_files.append(expected)
+
+    if not ripped_files:
+        sys.exit("Error: No .mkv files were created during the rip process.")
+
+    return ripped_files
 
 def run_handbrake_with_progress(hb_cmd: list[str], label: str) -> None:
-    """Run HandBrakeCLI and parse carriage-return progress lines into a clean bar."""
+    """Run HandBrakeCLI, show a live progress bar, and print errors on failure."""
     re_encode = re.compile(
         r"Encoding: task (\d+ of \d+), (\d+\.\d+) %(?: \(([\d\.]+) fps, avg ([\d\.]+) fps, ETA ([\dhms]+)\))?"
     )
@@ -182,14 +348,15 @@ def run_handbrake_with_progress(hb_cmd: list[str], label: str) -> None:
         stderr=subprocess.STDOUT,
     )
 
+    recent_logs: list[str] = []
     buffer = bytearray()
+
     if proc.stdout:
         while True:
             chunk = proc.stdout.read(128)
             if not chunk:
                 break
             buffer.extend(chunk)
-            # HandBrake uses \r for live updates and \n for log messages
             while b"\r" in buffer or b"\n" in buffer:
                 idx_r = buffer.find(b"\r")
                 idx_n = buffer.find(b"\n")
@@ -198,8 +365,11 @@ def run_handbrake_with_progress(hb_cmd: list[str], label: str) -> None:
                 else:
                     split_idx = idx_n
 
-                raw_line = buffer[:split_idx].decode("utf-8", errors="replace")
+                raw_line = buffer[:split_idx].decode("utf-8", errors="replace").strip()
                 del buffer[: split_idx + 1]
+
+                if not raw_line:
+                    continue
 
                 m_enc = re_encode.search(raw_line)
                 if m_enc:
@@ -219,11 +389,20 @@ def run_handbrake_with_progress(hb_cmd: list[str], label: str) -> None:
                     pct = float(pct_str)
                     eta_str = f"ETA {eta}" if eta else "Scanning..."
                     draw_progress_bar("Subtitle Scan", pct, f"({eta_str})")
+                    continue
+
+                # Save non-progress log lines so we can see errors if it crashes
+                recent_logs.append(raw_line)
+                if len(recent_logs) > 25:
+                    recent_logs.pop(0)
 
     proc.wait()
     if proc.returncode != 0:
-        print()
-        sys.exit(f"Error: HandBrakeCLI failed with exit code {proc.returncode}")
+        print(f"\n\nHandBrakeCLI failed (Exit Code {proc.returncode}). Last log messages:")
+        for log_line in recent_logs[-12:]:
+            print(f"  -> {log_line}")
+        print(f"\nCommand run:\n  {' '.join(hb_cmd)}")
+        sys.exit(1)
 
     draw_progress_bar(label, 100.0, "(Complete!)")
     print()
@@ -249,15 +428,12 @@ def main():
         "Folder of existing video files (Batch encode directory)",
     ]
     for d in drives:
-        source_options.append(f"Physical Disc - Single Movie ({d})")
-        source_options.append(
-            f"Physical Disc - TV Show / Multi-Special Disc ({d})"
-        )
+        source_options.append(f"Physical Disc in Drive ({d}) - Scan & Pick Titles")
 
     src_idx = ask_choice("1. Select Media Source:", source_options, default=0)
 
     title_input = input(
-        "\nEnter Movie or Show Title (e.g., 'The Hunt for Red October (1990)'): "
+        "\nEnter Movie or Show Title (e.g., 'A Charlie Brown Thanksgiving (1973)'): "
     ).strip()
     safe_title = (
         "".join(c for c in title_input if c not in r'\/:*?"<>|')
@@ -284,19 +460,17 @@ def main():
         if not input_files:
             sys.exit("No .mkv or .mp4 files found in that directory.")
     else:
-        drive_offset = (src_idx - 2) // 2
-        rip_all_titles = (src_idx - 2) % 2 == 1
-        selected_drive = drives[drive_offset]
+        selected_drive = drives[src_idx - 2]
         raw_dir = Path.home() / "Videos" / "Raw_Rips"
-        input_files = rip_disc(
-            selected_drive, raw_dir, safe_title, rip_all=rip_all_titles
+        # 1. Scan the disc
+        disc_titles = scan_disc_titles(selected_drive, min_len=180)
+        # 2. Let the user pick which tracks to extract
+        chosen_titles = select_titles_to_rip(disc_titles)
+        # 3. Rip only the chosen tracks
+        input_files = rip_selected_titles(
+            selected_drive, raw_dir, safe_title, chosen_titles
         )
         is_raw_rip = True
-
-    output_dir = Path.home() / "Videos" / "Encoded"
-    if len(input_files) > 1:
-        output_dir = output_dir / safe_title
-    output_dir.mkdir(parents=True, exist_ok=True)
 
     # 2. Content Type
     content_idx = ask_choice(
@@ -487,11 +661,15 @@ def main():
                 selected_encoder,
                 "-q",
                 str(base_q),
-                "--preset",
+                "--encoder-preset",
                 preset,
                 "--all-audio",
                 "--aencoder",
                 "copy",
+                "--audio-copy-mask",
+                "aac,ac3,eac3,truehd,dts,dtshd,mp3,flac",
+                "--audio-fallback",
+                "ac3",
             ]
             + sub_flags
             + extra_args
